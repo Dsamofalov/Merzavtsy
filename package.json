@@ -1,0 +1,28 @@
+{
+  "name": "merzavtsy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "hardhat build",
+    "compile": "hardhat build",
+    "test": "hardhat test",
+    "test:contracts": "hardhat test nodejs",
+    "test:daemon": "node --import tsx --test daemon/test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run compile && npm run test:contracts && npm run test:daemon && npm run typecheck"
+  },
+  "dependencies": {
+    "viem": "2.56.0"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "5.0.7",
+    "@openzeppelin/contracts": "5.6.1",
+    "hardhat": "3.14.0",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2"
+  }
+}
