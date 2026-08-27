@@ -7,7 +7,12 @@ const { viem, networkHelpers } = await network.create();
 async function deployIdentityFixture() {
   const [admin, alice, bob] = await viem.getWalletClients();
   const merzavets = await viem.deployContract("Merzavets", [admin.account.address]);
-  return { admin, alice, bob, merzavets };
+  const world = await viem.deployContract("MerzavetsWorld", [
+    merzavets.address,
+    admin.account.address,
+  ]);
+  await merzavets.write.setWorld([world.address], { account: admin.account });
+  return { admin, alice, bob, merzavets, world };
 }
 
 describe("Merzavets identity", function () {
