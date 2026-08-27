@@ -3,6 +3,8 @@ name: bootstrap-lock
 on:
   push:
     branches: ["feat/mvp"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -25,5 +27,7 @@ jobs:
           path: package-lock.json
       - name: Install dependencies
         run: npm install
-      - name: Run red identity test
+      - name: Compile contracts
+        run: npx hardhat build
+      - name: Run identity tests
         run: npx hardhat test nodejs test/Merzavets.test.ts
