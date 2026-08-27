@@ -11,11 +11,23 @@ interface IERC5192 {
     function locked(uint256 tokenId) external view returns (bool);
 }
 
+interface IMerzavetsWorldInitializer {
+    function initializeCreature(
+        uint256 tokenId,
+        address owner,
+        bytes32 genomeSeed,
+        uint64 birthTimestamp
+    ) external;
+}
+
 /// @title Merzavets
 /// @notice Account-bound identity for a single non-transferable creature per account.
 contract Merzavets is ERC721, Ownable, IERC5192 {
     error AlreadyBorn();
     error Soulbound();
+    error WorldAlreadyConfigured();
+    error WorldNotConfigured();
+    error InvalidWorld();
 
     struct BirthData {
         uint64 birthBlock;
@@ -25,6 +37,7 @@ contract Merzavets is ERC721, Ownable, IERC5192 {
     }
 
     uint256 private _nextTokenId = 1;
+    address public world;
 
     mapping(address owner => uint256 tokenId) public tokenOf;
     mapping(uint256 tokenId => BirthData data) public birthData;
@@ -36,10 +49,19 @@ contract Merzavets is ERC721, Ownable, IERC5192 {
         uint64 birthBlock,
         uint64 birthTimestamp
     );
+    event WorldConfigured(address indexed world);
 
     constructor(address initialOwner) ERC721("Merzavets", "MRZV") Ownable(initialOwner) {}
 
+    function setWorld(address world_) external onlyOwner {
+        if (world != address(0)) revert WorldAlreadyConfigured();
+        if (world_ == address(0)) revert InvalidWorld();
+        world = world_;
+        emit WorldConfigured(world_);
+    }
+
     function birth() external returns (uint256 tokenId) {
+        if (world == address(0)) revert WorldNotConfigured();
         if (tokenOf[msg.sender] != 0) revert AlreadyBorn();
 
         tokenId = _nextTokenId++;
@@ -66,6 +88,7 @@ contract Merzavets is ERC721, Ownable, IERC5192 {
         });
 
         _mint(msg.sender, tokenId);
+        IMerzavetsWorldInitializer(world).initializeCreature(tokenId, msg.sender, seed, bornAtTime);
 
         emit Locked(tokenId);
         emit Born(tokenId, msg.sender, seed, bornAtBlock, bornAtTime);
