@@ -78,6 +78,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
   const localMode = localModeOf(env);
   const chainId = positiveBigInt(required(env, "CHAIN_ID"), "CHAIN_ID");
   const epochBlocks = positiveBigInt(required(env, "EPOCH_BLOCKS"), "EPOCH_BLOCKS");
+  const oraclePrivateKey = privateKey(env, "ORACLE_PRIVATE_KEY");
+  const submitterPrivateKey = privateKey(env, "SUBMITTER_PRIVATE_KEY");
+  if (oraclePrivateKey.toLowerCase() === submitterPrivateKey.toLowerCase()) {
+    throw new Error(
+      "ORACLE_PRIVATE_KEY and SUBMITTER_PRIVATE_KEY must use different keys",
+    );
+  }
 
   const dbPath = localMode
     ? env.DB_PATH?.trim() || "./data/merzavtsy.sqlite"
@@ -95,8 +102,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     identityAddress: address(env, "IDENTITY_ADDRESS"),
     worldAddress: address(env, "WORLD_ADDRESS"),
     oracleAddress: address(env, "ORACLE_ADDRESS"),
-    oraclePrivateKey: privateKey(env, "ORACLE_PRIVATE_KEY"),
-    submitterPrivateKey: privateKey(env, "SUBMITTER_PRIVATE_KEY"),
+    oraclePrivateKey,
+    submitterPrivateKey,
     dbPath,
     finalityDepth,
     epochBlocks,
