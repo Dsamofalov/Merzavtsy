@@ -19,12 +19,16 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
     error AttestationExpired();
     error WrongChain();
     error WalletTokenMismatch();
+    error PeerWalletTokenMismatch();
     error ActivityOutOfBounds();
     error DigestAlreadyProcessed();
     error EpochAlreadyProcessed();
+    error PeerEncounterAlreadyProcessed();
     error InvalidNonce();
+    error InvalidPeerNonce();
     error InvalidBlockRange();
     error BlockRangeOverlap();
+    error InvalidPeerEncounter();
     error InvalidAddress();
 
     bytes32 public constant ORACLE_SIGNER_ROLE = keccak256("ORACLE_SIGNER_ROLE");
@@ -37,6 +41,9 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
     bytes32 private constant ACTIVITY_TYPEHASH = keccak256(
         "ActivityAttestation(address wallet,uint256 tokenId,uint256 chainId,uint64 fromBlock,uint64 toBlock,bytes32 epochId,bytes32 activityDigest,uint64 xpDelta,int16[8] personalityDeltas,int16[5] needDeltas,uint16[10] categoryCounters,uint256 nonce,uint256 deadline)"
     );
+    bytes32 private constant PEER_TYPEHASH = keccak256(
+        "PeerAttestation(address actorWallet,uint256 actorTokenId,address peerWallet,uint256 peerTokenId,uint256 chainId,uint64 blockNumber,bytes32 encounterDigest,uint256 nonce,uint256 deadline)"
+    );
 
     IMerzavetsWorld public immutable world;
     IMerzavetsIdentity public immutable identity;
@@ -46,6 +53,9 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
     mapping(address wallet => uint256 nonce) public nonces;
     mapping(uint256 tokenId => uint64 toBlock) public lastToBlock;
 
+    mapping(bytes32 encounterDigest => bool consumed) public processedPeerEncounter;
+    mapping(address wallet => uint256 nonce) public peerNonces;
+
     event ActivityAccepted(
         uint256 indexed tokenId,
         address indexed wallet,
@@ -54,6 +64,14 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
         uint64 fromBlock,
         uint64 toBlock,
         uint64 xpDelta
+    );
+    event PeerAccepted(
+        uint256 indexed actorTokenId,
+        uint256 indexed peerTokenId,
+        bytes32 indexed encounterDigest,
+        address actorWallet,
+        address peerWallet,
+        uint64 blockNumber
     );
 
     constructor(
@@ -118,6 +136,50 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
         );
     }
 
+    function submitPeer(
+        IMerzavetsWorld.PeerAttestation calldata attestation,
+        bytes calldata signature
+    ) external whenNotPaused {
+        if (attestation.chainId != block.chainid) revert WrongChain();
+        if (block.timestamp > attestation.deadline) revert AttestationExpired();
+        if (
+            attestation.actorTokenId == attestation.peerTokenId
+                || attestation.actorWallet == attestation.peerWallet
+        ) revert InvalidPeerEncounter();
+        if (identity.ownerOf(attestation.actorTokenId) != attestation.actorWallet) {
+            revert WalletTokenMismatch();
+        }
+        if (identity.ownerOf(attestation.peerTokenId) != attestation.peerWallet) {
+            revert PeerWalletTokenMismatch();
+        }
+        if (processedPeerEncounter[attestation.encounterDigest]) {
+            revert PeerEncounterAlreadyProcessed();
+        }
+        if (attestation.nonce != peerNonces[attestation.actorWallet]) revert InvalidPeerNonce();
+
+        bytes32 digest = _hashTypedDataV4(_peerStructHash(attestation));
+        address signer = ECDSA.recover(digest, signature);
+        if (!hasRole(ORACLE_SIGNER_ROLE, signer)) revert UnauthorizedSigner();
+
+        processedPeerEncounter[attestation.encounterDigest] = true;
+        peerNonces[attestation.actorWallet] = attestation.nonce + 1;
+
+        world.applyVerifiedPeerContact(
+            attestation.actorTokenId,
+            attestation.peerTokenId,
+            attestation.encounterDigest
+        );
+
+        emit PeerAccepted(
+            attestation.actorTokenId,
+            attestation.peerTokenId,
+            attestation.encounterDigest,
+            attestation.actorWallet,
+            attestation.peerWallet,
+            attestation.blockNumber
+        );
+    }
+
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
@@ -145,6 +207,27 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
                 keccak256(abi.encode(attestation.personalityDeltas)),
                 keccak256(abi.encode(attestation.needDeltas)),
                 keccak256(abi.encode(attestation.categoryCounters)),
+                attestation.nonce,
+                attestation.deadline
+            )
+        );
+    }
+
+    function _peerStructHash(IMerzavetsWorld.PeerAttestation calldata attestation)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                PEER_TYPEHASH,
+                attestation.actorWallet,
+                attestation.actorTokenId,
+                attestation.peerWallet,
+                attestation.peerTokenId,
+                attestation.chainId,
+                attestation.blockNumber,
+                attestation.encounterDigest,
                 attestation.nonce,
                 attestation.deadline
             )
