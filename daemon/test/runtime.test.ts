@@ -117,6 +117,14 @@ describe("RuntimePhases", () => {
     assert.equal(aliceFirst.summary.categoryCounters[ActivityCategory.REGISTERED_PEER_CONTACT], 1);
     assert.equal(bobFirst.summary.categoryCounters[ActivityCategory.REGISTERED_PEER_CONTACT], 1);
 
+    const firstPeers = store.pendingPeerEncounters();
+    assert.equal(firstPeers.length, 1);
+    assert.equal(firstPeers[0]?.observation.actorWallet.toLowerCase(), alice);
+    assert.equal(firstPeers[0]?.observation.actorTokenId, 1n);
+    assert.equal(firstPeers[0]?.observation.peerWallet.toLowerCase(), bob);
+    assert.equal(firstPeers[0]?.observation.peerTokenId, 2n);
+    assert.equal(firstPeers[0]?.observation.blockNumber, 11n);
+
     head = 13n;
     await runtime.syncRegistryAndIndexer();
     await runtime.processFinalizedBlocks();
@@ -129,6 +137,14 @@ describe("RuntimePhases", () => {
       assert.equal(epoch.summary.categoryCounters[ActivityCategory.UNIQUE_COUNTERPARTY], 0);
       assert.equal(epoch.summary.categoryCounters[ActivityCategory.REGISTERED_PEER_CONTACT], 1);
     }
+
+    const allPeers = store.pendingPeerEncounters();
+    assert.equal(allPeers.length, 2);
+    assert.deepEqual(allPeers.map((item) => item.observation.blockNumber), [11n, 12n]);
+    assert.notEqual(
+      allPeers[0]?.observation.encounterDigest,
+      allPeers[1]?.observation.encounterDigest,
+    );
 
     assert.deepEqual([...store.counterpartiesForWallet(alice)], [bob]);
     assert.deepEqual([...store.counterpartiesForWallet(bob)], [alice]);
@@ -168,6 +184,7 @@ describe("RuntimePhases", () => {
 
     await assert.rejects(runtime.persistEpochs(), /synthetic commit failure/);
     assert.equal(store.lastProcessedBlock(), 0n);
+    assert.deepEqual(store.pendingPeerEncounters(), []);
     store.close();
   });
 });
