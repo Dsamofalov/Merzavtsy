@@ -12,6 +12,8 @@ export interface RuntimeConfig {
   finalityDepth: bigint;
   epochBlocks: bigint;
   pollIntervalMs: number;
+  /** Plain ETH transfers below this value remain observable but do not earn transfer/diversity progression. */
+  minimumMeaningfulWei?: bigint;
   localMode: boolean;
 }
 
@@ -33,6 +35,11 @@ function positiveBigInt(value: string, name: string): bigint {
   const parsed = BigInt(value);
   if (parsed <= 0n) throw new Error(`${name} must be a positive integer`);
   return parsed;
+}
+
+function nonNegativeBigInt(value: string, name: string): bigint {
+  if (!/^[0-9]+$/.test(value)) throw new Error(`${name} must be a non-negative integer`);
+  return BigInt(value);
 }
 
 function positiveSafeInteger(value: string, name: string): number {
@@ -95,6 +102,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
   const pollIntervalMs = localMode
     ? positiveSafeInteger(env.POLL_INTERVAL_MS?.trim() || "1000", "POLL_INTERVAL_MS")
     : positiveSafeInteger(required(env, "POLL_INTERVAL_MS"), "POLL_INTERVAL_MS");
+  const minimumMeaningfulWei = nonNegativeBigInt(
+    env.MINIMUM_MEANINGFUL_WEI?.trim() || "0",
+    "MINIMUM_MEANINGFUL_WEI",
+  );
 
   return {
     rpcUrl: rpcUrl(env),
@@ -108,6 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     finalityDepth,
     epochBlocks,
     pollIntervalMs,
+    minimumMeaningfulWei,
     localMode,
   };
 }
