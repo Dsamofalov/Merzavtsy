@@ -1,5 +1,6 @@
 import type { Address, Hex, LocalAccount } from "viem";
 import type { RuntimeConfig } from "./config.js";
+import type { Logger } from "./logger.js";
 import type { BornEvent } from "./runtime.js";
 import { RuntimePhases } from "./runtime.js";
 import { DaemonService } from "./service.js";
@@ -25,6 +26,7 @@ export interface CreateDaemonApplicationOptions {
   store: DaemonStore;
   oracleSigner: LocalAccount;
   io: DaemonRuntimeIo;
+  logger?: Logger;
   getHeadBlock(): Promise<bigint>;
   getBlocks(fromBlock: bigint, toBlock: bigint): Promise<readonly ObservedBlock[]>;
   destinationHasCode(address: Address, blockNumber: bigint): Promise<boolean>;
@@ -53,10 +55,12 @@ export function createDaemonApplication(
     oracleSigner: options.oracleSigner,
     now: () => options.io.now(),
     gateway: options.io.submissionGateway(),
+    logger: options.logger,
   });
 
   const phases = new RuntimePhases({
     store: options.store,
+    logger: options.logger,
     chainId: options.config.chainId,
     deploymentBlock: options.deploymentBlock,
     finalityDepth: options.config.finalityDepth,
