@@ -6,12 +6,12 @@ import {
   defineChain,
   http,
   type Address,
-  type Hex,
   type LocalAccount,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { bindShutdownSignals, runDaemonLoop } from "./app.js";
-import { createDaemonApplication } from "./composition.js";
+import type { BootstrapChainState } from "./bootstrap.js";
+import { createDaemonApplication, type DaemonRuntimeIo } from "./composition.js";
 import { loadConfig, type RuntimeConfig } from "./config.js";
 import {
   assertDeploymentMatches,
@@ -25,8 +25,12 @@ import { DaemonStore } from "./store.js";
 import { createViemProductionAdapter } from "./viem-production.js";
 import type { ObservedBlock } from "./types.js";
 
+export interface ProductionRuntimeIo extends DaemonRuntimeIo {
+  bootstrapState(): Promise<BootstrapChainState>;
+}
+
 export interface ProductionNetwork {
-  io: ProductionIo;
+  io: ProductionRuntimeIo;
   oracleSigner: LocalAccount;
   getHeadBlock(): Promise<bigint>;
   getBlocks(fromBlock: bigint, toBlock: bigint): Promise<readonly ObservedBlock[]>;
