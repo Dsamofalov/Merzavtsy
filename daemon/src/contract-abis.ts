@@ -54,6 +54,8 @@ const CREATURE_STATE_COMPONENTS = [
   { name: "boredom", type: "uint16" },
   { name: "stress", type: "uint16" },
   { name: "socialNeed", type: "uint16" },
+  { name: "arousal", type: "uint16" },
+  { name: "stabilityState", type: "uint16" },
 ] as const;
 
 const RELATIONSHIP_COMPONENTS = [
@@ -80,11 +82,7 @@ export const WORLD_ABI = [
     name: "stateOf",
     stateMutability: "view",
     inputs: [{ name: "tokenId", type: "uint256" }],
-    outputs: [{
-      name: "",
-      type: "tuple",
-      components: CREATURE_STATE_COMPONENTS,
-    }],
+    outputs: [{ name: "", type: "tuple", components: CREATURE_STATE_COMPONENTS }],
   },
   {
     type: "function",
@@ -94,11 +92,35 @@ export const WORLD_ABI = [
       { name: "actorTokenId", type: "uint256" },
       { name: "targetTokenId", type: "uint256" },
     ],
-    outputs: [{
-      name: "",
-      type: "tuple",
-      components: RELATIONSHIP_COMPONENTS,
-    }],
+    outputs: [{ name: "", type: "tuple", components: RELATIONSHIP_COMPONENTS }],
+  },
+  {
+    type: "function",
+    name: "mutationCounters",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ name: "", type: "uint32[4]" }],
+  },
+  {
+    type: "function",
+    name: "memoryCapacity",
+    stateMutability: "pure",
+    inputs: [{ name: "level", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "visibleTraitSlots",
+    stateMutability: "pure",
+    inputs: [{ name: "level", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "intentUnlocked",
+    stateMutability: "pure",
+    inputs: [{ name: "level", type: "uint256" }, { name: "intent", type: "uint8" }],
+    outputs: [{ name: "", type: "bool" }],
   },
   {
     type: "function",
@@ -121,6 +143,7 @@ const ACTIVITY_ATTESTATION_COMPONENTS = [
   { name: "personalityDeltas", type: "int16[8]" },
   { name: "needDeltas", type: "int16[5]" },
   { name: "categoryCounters", type: "uint16[10]" },
+  { name: "mutationCounters", type: "uint16[4]" },
   { name: "nonce", type: "uint256" },
   { name: "deadline", type: "uint256" },
 ] as const;
@@ -138,77 +161,24 @@ const PEER_ATTESTATION_COMPONENTS = [
 ] as const;
 
 export const ORACLE_ABI = [
-  {
-    type: "function",
-    name: "identity",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "address" }],
-  },
-  {
-    type: "function",
-    name: "world",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "address" }],
-  },
-  {
-    type: "function",
-    name: "nonces",
-    stateMutability: "view",
-    inputs: [{ name: "wallet", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "peerNonces",
-    stateMutability: "view",
-    inputs: [{ name: "wallet", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "processedEpoch",
-    stateMutability: "view",
-    inputs: [
-      { name: "tokenId", type: "uint256" },
-      { name: "epochId", type: "bytes32" },
-    ],
-    outputs: [{ name: "", type: "bool" }],
-  },
-  {
-    type: "function",
-    name: "processedPeerEncounter",
-    stateMutability: "view",
-    inputs: [{ name: "encounterDigest", type: "bytes32" }],
-    outputs: [{ name: "", type: "bool" }],
-  },
+  { type: "function", name: "identity", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "world", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "nonces", stateMutability: "view", inputs: [{ name: "wallet", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "peerNonces", stateMutability: "view", inputs: [{ name: "wallet", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "processedEpoch", stateMutability: "view", inputs: [{ name: "tokenId", type: "uint256" }, { name: "epochId", type: "bytes32" }], outputs: [{ name: "", type: "bool" }] },
+  { type: "function", name: "processedPeerEncounter", stateMutability: "view", inputs: [{ name: "encounterDigest", type: "bytes32" }], outputs: [{ name: "", type: "bool" }] },
   {
     type: "function",
     name: "submit",
     stateMutability: "nonpayable",
-    inputs: [
-      {
-        name: "attestation",
-        type: "tuple",
-        components: ACTIVITY_ATTESTATION_COMPONENTS,
-      },
-      { name: "signature", type: "bytes" },
-    ],
+    inputs: [{ name: "attestation", type: "tuple", components: ACTIVITY_ATTESTATION_COMPONENTS }, { name: "signature", type: "bytes" }],
     outputs: [],
   },
   {
     type: "function",
     name: "submitPeer",
     stateMutability: "nonpayable",
-    inputs: [
-      {
-        name: "attestation",
-        type: "tuple",
-        components: PEER_ATTESTATION_COMPONENTS,
-      },
-      { name: "signature", type: "bytes" },
-    ],
+    inputs: [{ name: "attestation", type: "tuple", components: PEER_ATTESTATION_COMPONENTS }, { name: "signature", type: "bytes" }],
     outputs: [],
   },
 ] as const;
