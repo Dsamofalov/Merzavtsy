@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import type { Address, Hex } from "viem";
 import { ensureBirth, type BirthDriver } from "../../scripts/birth.js";
@@ -122,5 +123,15 @@ describe("operator CLI workflows", () => {
     });
 
     assert.deepEqual(result, { actorTokenId: 4n, targetTokenId: 8n, ...relationship });
+  });
+
+  it("package scripts expose all operator commands and env example documents the birth key", async () => {
+    const packageJson = JSON.parse(await readFile("package.json", "utf8")) as { scripts?: Record<string, string> };
+    assert.equal(packageJson.scripts?.birth, "node --import tsx scripts/birth.ts");
+    assert.equal(packageJson.scripts?.["show:state"], "node --import tsx scripts/show-state.ts");
+    assert.equal(packageJson.scripts?.["show:relationship"], "node --import tsx scripts/show-relationship.ts");
+
+    const envExample = await readFile(".env.example", "utf8");
+    assert.match(envExample, /BIRTH_PRIVATE_KEY=0x<64-hex-birth-private-key>/);
   });
 });
