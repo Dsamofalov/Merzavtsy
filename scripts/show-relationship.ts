@@ -12,7 +12,7 @@ export interface RelationshipSnapshot {
   envy: number;
   rivalry: number;
   interactionCount: number;
-  lastInteractionAt: bigint;
+  lastInteractionAt: number | bigint;
 }
 
 export interface RelationshipDriver {
@@ -81,7 +81,7 @@ export async function runShowRelationshipCli(
         abi: WORLD_ABI,
         functionName: "relationshipOf",
         args: [actor, target],
-      }) as Promise<RelationshipSnapshot>;
+      });
     },
   });
   console.log(bigintJson({ chainId, ...result }));
