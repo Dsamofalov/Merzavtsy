@@ -130,7 +130,7 @@ describe("expanded approved design", () => {
 
   it("uses explicit mutation counters plus age/level/dependency gates for advanced mutations", async () => {
     const { keeper, world, activity, submit } = await networkHelpers.loadFixture(fixture);
-    await submit(activity(0, { xpDelta: 15_000n, categoryCounters: [0,0,30,0,30,0,0,0,0,0], mutationCounters: [10,10,0,10] }));
+    await submit(activity(0, { xpDelta: 10_000n, categoryCounters: [0,0,30,0,30,0,0,0,0,0], mutationCounters: [10,10,0,10] }));
     let mask = await world.read.mutationMask([1n]);
     const rusty = await world.read.MUTATION_RUSTY_PAW();
     const networkScar = await world.read.MUTATION_NETWORK_SCAR();
