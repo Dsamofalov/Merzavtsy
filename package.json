@@ -11,6 +11,7 @@
     "compile": "hardhat build",
     "daemon": "node --import tsx daemon/src/main.ts",
     "deploy": "node --import tsx scripts/deploy.ts",
+    "status": "node --import tsx scripts/status.ts",
     "test": "hardhat test",
     "test:contracts": "hardhat test nodejs",
     "test:daemon": "node --import tsx --test daemon/test/*.test.ts",
