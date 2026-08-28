@@ -14,6 +14,16 @@ interface IMerzavetsWorld {
         int16[8] personalityDeltas;
         int16[5] needDeltas;
         uint16[10] categoryCounters;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
+    struct MutationMetricsAttestation {
+        address wallet;
+        uint256 tokenId;
+        uint256 chainId;
+        bytes32 epochId;
+        bytes32 activityDigest;
         uint16[4] mutationCounters;
         uint256 nonce;
         uint256 deadline;
@@ -32,6 +42,11 @@ interface IMerzavetsWorld {
     }
 
     function applyVerifiedActivity(ActivityAttestation calldata attestation) external;
+
+    function applyVerifiedMutationMetrics(
+        uint256 tokenId,
+        uint16[4] calldata mutationCounters
+    ) external;
 
     function applyVerifiedPeerContact(
         uint256 actorTokenId,
