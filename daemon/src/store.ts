@@ -4,7 +4,9 @@ import type { EpochSummary } from "./types.js";
 
 export interface StoredEpoch {
   summary: EpochSummary;
+  broadcastTxHash: Hex | null;
   submittedTxHash: Hex | null;
+  completed: boolean;
 }
 
 export interface IndexedEvent {
@@ -66,6 +68,20 @@ function deserializeSummary(serialized: string): EpochSummary {
     personalityDeltas: value.personalityDeltas,
     needDeltas: value.needDeltas,
     categoryCounters: value.categoryCounters,
+  };
+}
+
+function toStoredEpoch(row: {
+  payload_json: string;
+  broadcast_tx_hash: string | null;
+  submitted_tx_hash: string | null;
+  completed: number;
+}): StoredEpoch {
+  return {
+    summary: deserializeSummary(row.payload_json),
+    broadcastTxHash: row.broadcast_tx_hash as Hex | null,
+    submittedTxHash: row.submitted_tx_hash as Hex | null,
+    completed: row.completed !== 0,
   };
 }
 
@@ -147,8 +163,8 @@ export class DaemonStore {
       .prepare(
         `INSERT INTO epochs(
           epoch_id, chain_id, wallet, token_id, from_block, to_block,
-          activity_digest, payload_json, submitted_tx_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          activity_digest, payload_json, broadcast_tx_hash, submitted_tx_hash, completed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0)`,
       )
       .run(
         epochId,
@@ -165,44 +181,111 @@ export class DaemonStore {
 
   getEpoch(epochId: Hex): StoredEpoch | null {
     const row = this.#db
-      .prepare("SELECT payload_json, submitted_tx_hash FROM epochs WHERE epoch_id = ?")
+      .prepare(
+        `SELECT payload_json, broadcast_tx_hash, submitted_tx_hash, completed
+         FROM epochs WHERE epoch_id = ?`,
+      )
       .get(epochId.toLowerCase()) as
-      | { payload_json: string; submitted_tx_hash: string | null }
+      | {
+          payload_json: string;
+          broadcast_tx_hash: string | null;
+          submitted_tx_hash: string | null;
+          completed: number;
+        }
       | undefined;
-    if (row === undefined) return null;
-    return {
-      summary: deserializeSummary(row.payload_json),
-      submittedTxHash: row.submitted_tx_hash as Hex | null,
-    };
+    return row === undefined ? null : toStoredEpoch(row);
   }
 
   pendingEpochs(): StoredEpoch[] {
     const rows = this.#db
       .prepare(
-        `SELECT payload_json, submitted_tx_hash FROM epochs
-         WHERE submitted_tx_hash IS NULL ORDER BY from_block, wallet`,
+        `SELECT payload_json, broadcast_tx_hash, submitted_tx_hash, completed
+         FROM epochs WHERE completed = 0 ORDER BY from_block, wallet`,
       )
-      .all() as Array<{ payload_json: string; submitted_tx_hash: null }>;
-    return rows.map((row) => ({
-      summary: deserializeSummary(row.payload_json),
-      submittedTxHash: null,
-    }));
+      .all() as Array<{
+      payload_json: string;
+      broadcast_tx_hash: string | null;
+      submitted_tx_hash: string | null;
+      completed: number;
+    }>;
+    return rows.map(toStoredEpoch);
+  }
+
+  markEpochBroadcast(epochId: Hex, txHash: Hex): boolean {
+    const key = epochId.toLowerCase();
+    const row = this.#db
+      .prepare(
+        "SELECT broadcast_tx_hash, submitted_tx_hash, completed FROM epochs WHERE epoch_id = ?",
+      )
+      .get(key) as
+      | { broadcast_tx_hash: string | null; submitted_tx_hash: string | null; completed: number }
+      | undefined;
+    if (row === undefined) throw new Error(`unknown epoch ${epochId}`);
+    if (row.completed !== 0 || row.submitted_tx_hash !== null) {
+      throw new Error(`epoch ${epochId} already completed`);
+    }
+    if (row.broadcast_tx_hash !== null) {
+      if (row.broadcast_tx_hash.toLowerCase() === txHash.toLowerCase()) return false;
+      throw new Error(`epoch ${epochId} already broadcast as ${row.broadcast_tx_hash}`);
+    }
+
+    this.#db
+      .prepare("UPDATE epochs SET broadcast_tx_hash = ? WHERE epoch_id = ?")
+      .run(txHash.toLowerCase(), key);
+    return true;
+  }
+
+  clearEpochBroadcast(epochId: Hex, txHash: Hex): boolean {
+    const key = epochId.toLowerCase();
+    const row = this.#db
+      .prepare("SELECT broadcast_tx_hash, completed FROM epochs WHERE epoch_id = ?")
+      .get(key) as { broadcast_tx_hash: string | null; completed: number } | undefined;
+    if (row === undefined) throw new Error(`unknown epoch ${epochId}`);
+    if (row.completed !== 0) return false;
+    if (row.broadcast_tx_hash === null) return false;
+    if (row.broadcast_tx_hash.toLowerCase() !== txHash.toLowerCase()) {
+      throw new Error(`epoch ${epochId} broadcast hash mismatch`);
+    }
+
+    this.#db
+      .prepare("UPDATE epochs SET broadcast_tx_hash = NULL WHERE epoch_id = ?")
+      .run(key);
+    return true;
   }
 
   markEpochSubmitted(epochId: Hex, txHash: Hex): boolean {
     const key = epochId.toLowerCase();
     const row = this.#db
-      .prepare("SELECT submitted_tx_hash FROM epochs WHERE epoch_id = ?")
-      .get(key) as { submitted_tx_hash: string | null } | undefined;
+      .prepare("SELECT submitted_tx_hash, completed FROM epochs WHERE epoch_id = ?")
+      .get(key) as { submitted_tx_hash: string | null; completed: number } | undefined;
     if (row === undefined) throw new Error(`unknown epoch ${epochId}`);
     if (row.submitted_tx_hash !== null) {
       if (row.submitted_tx_hash.toLowerCase() === txHash.toLowerCase()) return false;
       throw new Error(`epoch ${epochId} already submitted as ${row.submitted_tx_hash}`);
     }
+    if (row.completed !== 0) throw new Error(`epoch ${epochId} already completed without tx hash`);
 
     this.#db
-      .prepare("UPDATE epochs SET submitted_tx_hash = ? WHERE epoch_id = ?")
-      .run(txHash.toLowerCase(), key);
+      .prepare(
+        `UPDATE epochs
+         SET broadcast_tx_hash = ?, submitted_tx_hash = ?, completed = 1
+         WHERE epoch_id = ?`,
+      )
+      .run(txHash.toLowerCase(), txHash.toLowerCase(), key);
+    return true;
+  }
+
+  markEpochConsumed(epochId: Hex): boolean {
+    const key = epochId.toLowerCase();
+    const row = this.#db
+      .prepare("SELECT completed FROM epochs WHERE epoch_id = ?")
+      .get(key) as { completed: number } | undefined;
+    if (row === undefined) throw new Error(`unknown epoch ${epochId}`);
+    if (row.completed !== 0) return false;
+
+    this.#db
+      .prepare("UPDATE epochs SET completed = 1 WHERE epoch_id = ?")
+      .run(key);
     return true;
   }
 
@@ -337,7 +420,9 @@ export class DaemonStore {
         to_block INTEGER NOT NULL,
         activity_digest TEXT NOT NULL,
         payload_json TEXT NOT NULL,
+        broadcast_tx_hash TEXT,
         submitted_tx_hash TEXT,
+        completed INTEGER NOT NULL DEFAULT 0,
         UNIQUE(chain_id, wallet, from_block, to_block)
       );
 
@@ -369,5 +454,15 @@ export class DaemonStore {
         PRIMARY KEY(tx_hash, log_index)
       );
     `);
+
+    const columns = this.#db.prepare("PRAGMA table_info(epochs)").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("broadcast_tx_hash")) {
+      this.#db.exec("ALTER TABLE epochs ADD COLUMN broadcast_tx_hash TEXT;");
+    }
+    if (!names.has("completed")) {
+      this.#db.exec("ALTER TABLE epochs ADD COLUMN completed INTEGER NOT NULL DEFAULT 0;");
+      this.#db.exec("UPDATE epochs SET completed = 1 WHERE submitted_tx_hash IS NOT NULL;");
+    }
   }
 }
