@@ -18,6 +18,12 @@ export interface IndexedEvent {
   payload: Record<string, unknown>;
 }
 
+export interface RegisteredCreature {
+  wallet: Address;
+  tokenId: bigint;
+  birthBlock: bigint;
+}
+
 function blockNumber(value: bigint): number {
   if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error("block number is outside safe SQLite integer range");
@@ -25,8 +31,14 @@ function blockNumber(value: bigint): number {
   return Number(value);
 }
 
+function serializeJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    typeof item === "bigint" ? item.toString() : item,
+  );
+}
+
 function serializeSummary(summary: EpochSummary): string {
-  return JSON.stringify({
+  return serializeJson({
     wallet: summary.wallet.toLowerCase(),
     tokenId: summary.tokenId.toString(),
     chainId: summary.chainId.toString(),
@@ -97,6 +109,18 @@ export class DaemonStore {
 
   close(): void {
     this.#db.close();
+  }
+
+  transaction<T>(operation: () => T): T {
+    this.#db.exec("BEGIN IMMEDIATE;");
+    try {
+      const result = operation();
+      this.#db.exec("COMMIT;");
+      return result;
+    } catch (error) {
+      this.#db.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   recordProcessedBlock(number: bigint, hash: Hex, parentHash: Hex): boolean {
@@ -328,6 +352,49 @@ export class DaemonStore {
     return row?.wallet ?? null;
   }
 
+  registeredCreatures(): RegisteredCreature[] {
+    const rows = this.#db
+      .prepare("SELECT wallet, token_id, birth_block FROM registry")
+      .all() as Array<{ wallet: string; token_id: string; birth_block: number }>;
+    return rows
+      .map((row) => ({
+        wallet: row.wallet as Address,
+        tokenId: BigInt(row.token_id),
+        birthBlock: BigInt(row.birth_block),
+      }))
+      .sort((a, b) => (a.tokenId < b.tokenId ? -1 : a.tokenId > b.tokenId ? 1 : 0));
+  }
+
+  recordContractDestination(wallet: Address, contract: Address, atBlock: bigint): boolean {
+    return this.#recordSeen(
+      "contract_destinations",
+      "contract",
+      wallet,
+      contract,
+      atBlock,
+    );
+  }
+
+  recordSelector(wallet: Address, selector: Hex, atBlock: bigint): boolean {
+    return this.#recordSeen("selectors", "selector", wallet, selector, atBlock);
+  }
+
+  recordCounterparty(wallet: Address, counterparty: Address, atBlock: bigint): boolean {
+    return this.#recordSeen("counterparties", "counterparty", wallet, counterparty, atBlock);
+  }
+
+  contractDestinations(wallet: Address): ReadonlySet<string> {
+    return this.#seenValues("contract_destinations", "contract", wallet);
+  }
+
+  selectorsForWallet(wallet: Address): ReadonlySet<string> {
+    return this.#seenValues("selectors", "selector", wallet);
+  }
+
+  counterpartiesForWallet(wallet: Address): ReadonlySet<string> {
+    return this.#seenValues("counterparties", "counterparty", wallet);
+  }
+
   recordEvent(event: IndexedEvent): boolean {
     const existing = this.#db
       .prepare(
@@ -337,7 +404,7 @@ export class DaemonStore {
       .get(event.txHash.toLowerCase(), event.logIndex) as
       | { block_number: number; address: string; event_name: string; payload_json: string }
       | undefined;
-    const payload = JSON.stringify(event.payload);
+    const payload = serializeJson(event.payload);
 
     if (existing !== undefined) {
       if (
@@ -392,6 +459,51 @@ export class DaemonStore {
     }));
   }
 
+  #recordSeen(
+    table: "contract_destinations" | "selectors" | "counterparties",
+    valueColumn: "contract" | "selector" | "counterparty",
+    wallet: Address,
+    value: string,
+    atBlock: bigint,
+  ): boolean {
+    const normalizedWallet = wallet.toLowerCase();
+    const normalizedValue = value.toLowerCase();
+    const height = blockNumber(atBlock);
+    const existing = this.#db
+      .prepare(`SELECT interaction_count FROM ${table} WHERE wallet = ? AND ${valueColumn} = ?`)
+      .get(normalizedWallet, normalizedValue) as { interaction_count: number } | undefined;
+
+    if (existing === undefined) {
+      this.#db
+        .prepare(
+          `INSERT INTO ${table}(wallet, ${valueColumn}, first_block, last_block, interaction_count)
+           VALUES (?, ?, ?, ?, 1)`,
+        )
+        .run(normalizedWallet, normalizedValue, height, height);
+      return true;
+    }
+
+    this.#db
+      .prepare(
+        `UPDATE ${table}
+         SET last_block = ?, interaction_count = interaction_count + 1
+         WHERE wallet = ? AND ${valueColumn} = ?`,
+      )
+      .run(height, normalizedWallet, normalizedValue);
+    return false;
+  }
+
+  #seenValues(
+    table: "contract_destinations" | "selectors" | "counterparties",
+    valueColumn: "contract" | "selector" | "counterparty",
+    wallet: Address,
+  ): ReadonlySet<string> {
+    const rows = this.#db
+      .prepare(`SELECT ${valueColumn} AS value FROM ${table} WHERE wallet = ? ORDER BY ${valueColumn}`)
+      .all(wallet.toLowerCase()) as Array<{ value: string }>;
+    return new Set(rows.map((row) => row.value));
+  }
+
   #migrate(): void {
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS meta(
@@ -442,6 +554,15 @@ export class DaemonStore {
         last_block INTEGER NOT NULL,
         interaction_count INTEGER NOT NULL,
         PRIMARY KEY(wallet, selector)
+      );
+
+      CREATE TABLE IF NOT EXISTS counterparties(
+        wallet TEXT NOT NULL,
+        counterparty TEXT NOT NULL,
+        first_block INTEGER NOT NULL,
+        last_block INTEGER NOT NULL,
+        interaction_count INTEGER NOT NULL,
+        PRIMARY KEY(wallet, counterparty)
       );
 
       CREATE TABLE IF NOT EXISTS events(
