@@ -519,18 +519,57 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint8 action
     ) private view returns (SocialRules.Deltas memory delta) {
         CreatureState storage actor = _states[actorTokenId];
-        CreatureState storage target = _states[targetTokenId];
-        Relationship storage relationship = _relationships[actorTokenId][targetTokenId];
-
         delta = SocialRules.forAction(action, actor.aggression, actor.sociability, actor.chaos);
+        uint256 seed = _socialSeed(actorTokenId, targetTokenId, action);
+        return _applySocialModifiers(
+            delta,
+            action,
+            _states[targetTokenId],
+            _relationships[actorTokenId][targetTokenId],
+            seed
+        );
+    }
 
-        bytes32 actorHash = keccak256(
-            abi.encode(actor.aggression, actor.curiosity, actor.sociability, actor.stability, actor.chaos, actor.memoryBias)
+    function _socialSeed(
+        uint256 actorTokenId,
+        uint256 targetTokenId,
+        uint8 action
+    ) private view returns (uint256) {
+        return uint256(
+            keccak256(
+                abi.encode(
+                    genomeSeedOf[actorTokenId],
+                    genomeSeedOf[targetTokenId],
+                    actorTokenId,
+                    targetTokenId,
+                    action,
+                    _personalityFingerprint(_states[actorTokenId]),
+                    _personalityFingerprint(_states[targetTokenId]),
+                    _relationshipFingerprint(actorTokenId, targetTokenId)
+                )
+            )
         );
-        bytes32 targetHash = keccak256(
-            abi.encode(target.aggression, target.curiosity, target.sociability, target.stability, target.chaos, target.memoryBias)
+    }
+
+    function _personalityFingerprint(CreatureState storage state) private view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                state.aggression,
+                state.curiosity,
+                state.sociability,
+                state.stability,
+                state.chaos,
+                state.memoryBias
+            )
         );
-        bytes32 historyHash = keccak256(
+    }
+
+    function _relationshipFingerprint(
+        uint256 actorTokenId,
+        uint256 targetTokenId
+    ) private view returns (bytes32) {
+        Relationship storage relationship = _relationships[actorTokenId][targetTokenId];
+        return keccak256(
             abi.encode(
                 relationship.affinity,
                 relationship.trust,
@@ -543,21 +582,15 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
                 hostileSocialCount[actorTokenId]
             )
         );
-        uint256 seed = uint256(
-            keccak256(
-                abi.encode(
-                    genomeSeedOf[actorTokenId],
-                    genomeSeedOf[targetTokenId],
-                    actorTokenId,
-                    targetTokenId,
-                    action,
-                    actorHash,
-                    targetHash,
-                    historyHash
-                )
-            )
-        );
+    }
 
+    function _applySocialModifiers(
+        SocialRules.Deltas memory delta,
+        uint8 action,
+        CreatureState storage target,
+        Relationship storage relationship,
+        uint256 seed
+    ) private view returns (SocialRules.Deltas memory) {
         int256 jitter = int256(seed % 41) - 20;
         int256 warmth = int256(uint256(target.sociability)) / 250;
         int256 resistance = int256(uint256(target.stability)) / 250;
@@ -575,6 +608,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
             delta.rivalry = _delta(int256(delta.rivalry) + threat / 2 + historyWeight);
             delta.fear = _delta(int256(delta.fear) + threat / 3);
         }
+        return delta;
     }
 
     function _evaluateRelationshipMilestones(
