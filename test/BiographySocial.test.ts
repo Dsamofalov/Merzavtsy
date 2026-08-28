@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
+import { keccak256, stringToBytes } from "viem";
 
 const { viem, networkHelpers } = await network.create();
 
@@ -9,6 +10,7 @@ async function fixture() {
   const identity = await viem.deployContract("Merzavets", [admin.account.address]);
   const world = await viem.deployContract("MerzavetsWorld", [identity.address, admin.account.address]);
   await identity.write.setWorld([world.address], { account: admin.account });
+  await world.write.setOracle([admin.account.address], { account: admin.account });
   await identity.write.birth({ account: alice.account });
   await identity.write.birth({ account: bob.account });
   await identity.write.birth({ account: carol.account });
@@ -62,13 +64,51 @@ describe("irreversible social biography", () => {
     assert.notEqual((await world.read.mutationMask([1n])) & doubleTongue, 0n);
   });
 
-  it("adds old-account and rare-combination scars exactly once", async () => {
+  it("adds old-account scars exactly once", async () => {
     const { keeper, world } = await networkHelpers.loadFixture(fixture);
     await networkHelpers.time.increase(91 * 24 * 60 * 60);
     await world.write.syncLifecycle([1n], { account: keeper.account });
     const oldScar = await world.read.SCAR_OLD_ACCOUNT();
     assert.notEqual((await world.read.scarMask([1n])) & oldScar, 0n);
     assert.equal(await world.read.scarUnlockCount([1n, oldScar]), 1);
+    await world.write.syncLifecycle([1n], { account: keeper.account });
+    assert.equal(await world.read.scarUnlockCount([1n, oldScar]), 1);
+  });
+
+  it("adds the rare canonical mutation-combination scar exactly once", async () => {
+    const { admin, alice, keeper, world } = await networkHelpers.loadFixture(fixture);
+    const publicClient = await viem.getPublicClient();
+    const chainId = BigInt(await publicClient.getChainId());
+    const attestation = {
+      wallet: alice.account.address,
+      tokenId: 1n,
+      chainId,
+      fromBlock: 1n,
+      toBlock: 1n,
+      epochId: keccak256(stringToBytes("rare-combo-epoch")),
+      activityDigest: keccak256(stringToBytes("rare-combo-activity")),
+      xpDelta: 0n,
+      personalityDeltas: [0, 0, 0, 0, 0, 0, 0, 0] as const,
+      needDeltas: [0, 0, 0, 0, 0] as const,
+      categoryCounters: [0, 0, 20, 0, 0, 0, 0, 0, 5, 10] as const,
+      nonce: 0n,
+      deadline: 4_000_000_000n,
+    };
+    await world.write.applyVerifiedActivity([attestation], { account: admin.account });
+
+    const gasGills = await world.read.MUTATION_GAS_GILLS();
+    const contractTeeth = await world.read.MUTATION_CONTRACT_TEETH();
+    const calldataEye = await world.read.MUTATION_CALLDATA_EYE();
+    const mutations = await world.read.mutationMask([1n]);
+    assert.notEqual(mutations & gasGills, 0n);
+    assert.notEqual(mutations & contractTeeth, 0n);
+    assert.notEqual(mutations & calldataEye, 0n);
+
+    const rareScar = await world.read.SCAR_RARE_COMBINATION();
+    assert.notEqual((await world.read.scarMask([1n])) & rareScar, 0n);
+    assert.equal(await world.read.scarUnlockCount([1n, rareScar]), 1);
+    await world.write.syncLifecycle([1n], { account: keeper.account });
+    assert.equal(await world.read.scarUnlockCount([1n, rareScar]), 1);
   });
 
   it("uses target personality, recent relationship state and deterministic seed in previewed outcomes", async () => {
