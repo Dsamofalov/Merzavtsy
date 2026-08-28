@@ -129,7 +129,7 @@ describe("production daemon startup", () => {
           async destinationHasCode() { return false; },
         };
       },
-      openStore(path) { return new DaemonStore(path); },
+      openStore(path: string) { return new DaemonStore(path); },
       logger,
     } as never);
 
