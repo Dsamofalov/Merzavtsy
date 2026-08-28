@@ -59,6 +59,9 @@ export function buildAttestation(
 ): ActivityAttestation {
   if (nonce < 0n) throw new Error("nonce must be non-negative");
   if (deadline < 0n) throw new Error("deadline must be non-negative");
+  const mutationCounters: MutationCounters = summary.mutationCounters === undefined
+    ? [0, 0, 0, 0]
+    : [...summary.mutationCounters] as MutationCounters;
 
   return {
     wallet: summary.wallet,
@@ -72,7 +75,7 @@ export function buildAttestation(
     personalityDeltas: [...summary.personalityDeltas] as PersonalityDeltas,
     needDeltas: [...summary.needDeltas] as NeedDeltas,
     categoryCounters: [...summary.categoryCounters] as CategoryCounters,
-    mutationCounters: [...summary.mutationCounters] as MutationCounters,
+    mutationCounters,
     nonce,
     deadline,
   };
