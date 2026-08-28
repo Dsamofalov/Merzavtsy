@@ -4,6 +4,7 @@ import {
   type CategoryCounters,
   type ClassifiedActivity,
   type EpochSummary,
+  type MutationCounters,
   type NeedDeltas,
   type PersonalityDeltas,
 } from "./types.js";
@@ -13,6 +14,7 @@ const MAX_XP_DELTA = 10_000;
 const MAX_PERSONALITY_DELTA = 1_000;
 const MAX_NEED_DELTA = 2_000;
 const MAX_CATEGORY_COUNTER = 1_000;
+const MAX_MUTATION_COUNTER = 1_000;
 
 const XP_POINTS: CategoryCounters = [10, 10, 25, 40, 10, 100, 20, 50, 15, 30];
 
@@ -22,6 +24,10 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 function blankCounters(): CategoryCounters {
   return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+}
+
+function blankMutationCounters(): MutationCounters {
+  return [0, 0, 0, 0];
 }
 
 /**
@@ -97,6 +103,28 @@ function buildNeeds(scores: CategoryCounters): NeedDeltas {
   ];
 }
 
+function buildMutationCounters(activities: readonly ClassifiedActivity[]): MutationCounters {
+  const result = blankMutationCounters();
+  const perBlock = new Map<string, number>();
+  const perContract = new Map<string, number>();
+
+  for (const activity of activities) {
+    const blockKey = activity.blockNumber.toString();
+    perBlock.set(blockKey, (perBlock.get(blockKey) ?? 0) + Math.max(0, activity.units));
+    if (activity.contract !== undefined) {
+      const key = activity.contract.toLowerCase();
+      perContract.set(key, (perContract.get(key) ?? 0) + Math.max(0, activity.units));
+    }
+  }
+
+  for (const count of perBlock.values()) if (count >= 3) result[0] += 1;
+  // Counter 1 (bridge/network-like) is supplied by the durable activity-history classifier.
+  // Counter 2 (hostile-social history) is canonicalized by World from social actions.
+  for (const count of perContract.values()) if (count >= 2) result[3] += 1;
+
+  return result.map((value) => Math.min(value, MAX_MUTATION_COUNTER)) as MutationCounters;
+}
+
 export function aggregateEpoch(
   wallet: Address,
   tokenId: bigint,
@@ -109,33 +137,22 @@ export function aggregateEpoch(
 
   const rawCounters = blankCounters();
   for (const activity of activities) {
-    if (!Number.isSafeInteger(activity.units) || activity.units < 0) {
-      throw new Error("activity units must be a non-negative safe integer");
-    }
-    if (activity.category < 0 || activity.category > ActivityCategory.SELECTOR_DIVERSITY) {
-      throw new Error("invalid activity category");
-    }
+    if (!Number.isSafeInteger(activity.units) || activity.units < 0) throw new Error("activity units must be a non-negative safe integer");
+    if (activity.category < 0 || activity.category > ActivityCategory.SELECTOR_DIVERSITY) throw new Error("invalid activity category");
     rawCounters[activity.category] += activity.units;
   }
 
-  const categoryCounters = rawCounters.map((value) =>
-    Math.min(value, MAX_CATEGORY_COUNTER),
-  ) as CategoryCounters;
+  const categoryCounters = rawCounters.map((value) => Math.min(value, MAX_CATEGORY_COUNTER)) as CategoryCounters;
   const scores = rawCounters.map(diminishingScore) as CategoryCounters;
 
   let xp = 0;
-  for (let index = 0; index < XP_POINTS.length; index += 1) {
-    xp += points(scores[index], XP_POINTS[index]);
-  }
+  for (let index = 0; index < XP_POINTS.length; index += 1) xp += points(scores[index], XP_POINTS[index]);
   xp = clamp(xp, 0, MAX_XP_DELTA);
 
   const canonical = activities.map(canonicalActivity).sort();
   const activityDigest = keccak256(toHex(canonical.join("|")));
   const epochId = keccak256(
-    encodePacked(
-      ["uint256", "address", "uint64", "uint64"],
-      [chainId, wallet, fromBlock, toBlock],
-    ),
+    encodePacked(["uint256", "address", "uint64", "uint64"], [chainId, wallet, fromBlock, toBlock]),
   );
 
   return {
@@ -150,5 +167,6 @@ export function aggregateEpoch(
     personalityDeltas: buildPersonality(scores),
     needDeltas: buildNeeds(scores),
     categoryCounters,
+    mutationCounters: buildMutationCounters(activities),
   };
 }
