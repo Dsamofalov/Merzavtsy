@@ -1,8 +1,9 @@
-import type { Address, Hex } from "viem";
+import { encodePacked, keccak256, type Address, type Hex } from "viem";
 import { aggregateEpoch } from "./aggregator.js";
 import { finalizedRange, dedupeBlockObservations, type BlockRange } from "./chain-watcher.js";
 import { classifyTransaction } from "./classifier.js";
 import { dueLifeTicks, type LifeTickCandidate } from "./life-keeper.js";
+import type { PeerObservation } from "./peer-attestation.js";
 import { DaemonStore, type IndexedEvent } from "./store.js";
 import type {
   ClassifiedActivity,
@@ -55,6 +56,18 @@ function selectorOf(input: Hex): Hex | null {
   return input.length >= 10 ? input.slice(0, 10).toLowerCase() as Hex : null;
 }
 
+function peerDigest(
+  chainId: bigint,
+  txHash: Hex,
+  actorTokenId: bigint,
+  peerTokenId: bigint,
+): Hex {
+  return keccak256(encodePacked(
+    ["uint256", "bytes32", "uint256", "uint256"],
+    [chainId, txHash, actorTokenId, peerTokenId],
+  ));
+}
+
 /**
  * Implements one deterministic daemon iteration independently of any specific
  * RPC client. Network I/O is supplied through RuntimeDependencies; canonical
@@ -66,6 +79,7 @@ export class RuntimePhases {
   #blocks: ObservedBlock[] = [];
   #activities = new Map<string, ClassifiedActivity[]>();
   #seenUpdates: SeenUpdate[] = [];
+  #peerEncounters: PeerObservation[] = [];
 
   constructor(dependencies: RuntimeDependencies) {
     if (dependencies.chainId <= 0n) throw new Error("chainId must be positive");
@@ -144,21 +158,49 @@ export class RuntimePhases {
 
     for (const block of blocks) {
       for (const tx of block.transactions) {
+        if (tx.chainId !== this.#dependencies.chainId) {
+          throw new Error(`observed transaction ${tx.txHash} has wrong chain id ${tx.chainId}`);
+        }
+
         const fromCreature = creatureByWallet.get(lower(tx.from));
         const toCreature = tx.to === null ? undefined : creatureByWallet.get(lower(tx.to));
         if (fromCreature === undefined && toCreature === undefined) continue;
 
+        const actorIsActive = fromCreature !== undefined && tx.blockNumber > fromCreature.birthBlock;
+        const peerIsActive = toCreature !== undefined && tx.blockNumber > toCreature.birthBlock;
+        if (
+          actorIsActive
+          && peerIsActive
+          && fromCreature!.tokenId !== toCreature!.tokenId
+          && tx.to !== null
+        ) {
+          this.#peerEncounters.push({
+            actorWallet: fromCreature!.wallet,
+            actorTokenId: fromCreature!.tokenId,
+            peerWallet: toCreature!.wallet,
+            peerTokenId: toCreature!.tokenId,
+            chainId: this.#dependencies.chainId,
+            blockNumber: tx.blockNumber,
+            encounterDigest: peerDigest(
+              this.#dependencies.chainId,
+              tx.txHash,
+              fromCreature!.tokenId,
+              toCreature!.tokenId,
+            ),
+          });
+        }
+
         let hasCode = false;
-        if (tx.to !== null && fromCreature !== undefined && tx.blockNumber > fromCreature.birthBlock) {
+        if (tx.to !== null && actorIsActive) {
           hasCode = await this.#dependencies.destinationHasCode(tx.to, tx.blockNumber);
         }
 
         const wallets = new Map<string, Address>();
-        if (fromCreature !== undefined && tx.blockNumber > fromCreature.birthBlock) {
-          wallets.set(lower(fromCreature.wallet), fromCreature.wallet);
+        if (actorIsActive) {
+          wallets.set(lower(fromCreature!.wallet), fromCreature!.wallet);
         }
-        if (toCreature !== undefined && tx.blockNumber > toCreature.birthBlock) {
-          wallets.set(lower(toCreature.wallet), toCreature.wallet);
+        if (peerIsActive) {
+          wallets.set(lower(toCreature!.wallet), toCreature!.wallet);
         }
 
         for (const wallet of wallets.values()) {
@@ -216,6 +258,9 @@ export class RuntimePhases {
 
     this.#dependencies.store.transaction(() => {
       for (const summary of summaries) this.#dependencies.store.putEpoch(summary);
+      for (const encounter of this.#peerEncounters) {
+        this.#dependencies.store.putPeerEncounter(encounter);
+      }
       for (const update of this.#seenUpdates) {
         if (update.kind === "counterparty") {
           this.#dependencies.store.recordCounterparty(
@@ -318,5 +363,6 @@ export class RuntimePhases {
     this.#blocks = [];
     this.#activities.clear();
     this.#seenUpdates = [];
+    this.#peerEncounters = [];
   }
 }
