@@ -3,8 +3,10 @@ import { aggregateEpoch } from "./aggregator.js";
 import { finalizedRange, dedupeBlockObservations, type BlockRange } from "./chain-watcher.js";
 import { classifyTransaction } from "./classifier.js";
 import { dueLifeTicks, type LifeTickCandidate } from "./life-keeper.js";
+import { errorLogFields, noopLogger, type Logger } from "./logger.js";
 import type { PeerObservation } from "./peer-attestation.js";
 import { DaemonStore, type IndexedEvent } from "./store.js";
+import "./store-operational.js";
 import type {
   ClassifiedActivity,
   ObservedBlock,
@@ -21,6 +23,7 @@ export interface BornEvent {
 
 export interface RuntimeDependencies {
   store: DaemonStore;
+  logger?: Logger;
   chainId: bigint;
   deploymentBlock: bigint;
   finalityDepth: bigint;
@@ -75,6 +78,7 @@ function peerDigest(
  */
 export class RuntimePhases {
   readonly #dependencies: RuntimeDependencies;
+  readonly #logger: Logger;
   #range: BlockRange | null | undefined;
   #blocks: ObservedBlock[] = [];
   #activities = new Map<string, ClassifiedActivity[]>();
@@ -88,26 +92,49 @@ export class RuntimePhases {
     if (dependencies.epochBlocks <= 0n) throw new Error("epochBlocks must be positive");
     if (dependencies.highGasThreshold < 0n) throw new Error("highGasThreshold must be non-negative");
     this.#dependencies = dependencies;
+    this.#logger = dependencies.logger ?? noopLogger;
   }
 
   async syncRegistryAndIndexer(): Promise<void> {
     this.#clearWorkingState();
 
-    const head = await this.#dependencies.getHeadBlock();
+    const failStop = this.#dependencies.store.failStopReason();
+    if (failStop !== null) {
+      throw new Error(`daemon fail-stop engaged: ${failStop}`);
+    }
+
+    const head = await this.#rpc("getHeadBlock", () => this.#dependencies.getHeadBlock());
     const durableLast = this.#dependencies.store.lastProcessedBlock();
     const beforeDeployment = this.#dependencies.deploymentBlock - 1n;
     const effectiveLast = durableLast > beforeDeployment ? durableLast : beforeDeployment;
+    this.#logger.info("chain_progress", {
+      head,
+      durableLast,
+      effectiveLast,
+      finalityDepth: this.#dependencies.finalityDepth,
+    });
+
     this.#range = finalizedRange(
       effectiveLast,
       head,
       this.#dependencies.finalityDepth,
       this.#dependencies.epochBlocks,
     );
-    if (this.#range === null) return;
+    if (this.#range === null) {
+      this.#logger.info("registered_wallet_count", {
+        count: this.#dependencies.store.registeredCreatures().length,
+      });
+      return;
+    }
+
+    this.#logger.info("epoch_opened", {
+      fromBlock: this.#range.fromBlock,
+      toBlock: this.#range.toBlock,
+    });
 
     const [births, events] = await Promise.all([
-      this.#dependencies.getBornEvents(this.#range.fromBlock, this.#range.toBlock),
-      this.#dependencies.getIndexedEvents(this.#range.fromBlock, this.#range.toBlock),
+      this.#rpc("getBornEvents", () => this.#dependencies.getBornEvents(this.#range!.fromBlock, this.#range!.toBlock)),
+      this.#rpc("getIndexedEvents", () => this.#dependencies.getIndexedEvents(this.#range!.fromBlock, this.#range!.toBlock)),
     ]);
 
     this.#dependencies.store.transaction(() => {
@@ -124,6 +151,10 @@ export class RuntimePhases {
         this.#dependencies.store.recordEvent(event);
       }
     });
+
+    this.#logger.info("registered_wallet_count", {
+      count: this.#dependencies.store.registeredCreatures().length,
+    });
   }
 
   async processFinalizedBlocks(): Promise<void> {
@@ -132,9 +163,14 @@ export class RuntimePhases {
     }
     if (this.#range === null) return;
 
-    const fetched = await this.#dependencies.getBlocks(this.#range.fromBlock, this.#range.toBlock);
+    const range = this.#range;
+    const fetched = await this.#rpc(
+      "getBlocks",
+      () => this.#dependencies.getBlocks(range.fromBlock, range.toBlock),
+    );
     const blocks = dedupeBlockObservations(fetched);
-    this.#assertCompleteRange(blocks, this.#range);
+    this.#assertCompleteRange(blocks, range);
+    this.#assertDurableParent(blocks, range);
     this.#blocks = blocks;
 
     const creatures = this.#dependencies.store.registeredCreatures();
@@ -150,7 +186,6 @@ export class RuntimePhases {
         counterparties: new Set(this.#dependencies.store.counterpartiesForWallet(wallet)),
         selectors: new Set(this.#dependencies.store.selectorsForWallet(wallet)),
       };
-      // Self-transfers are never "new counterparties".
       state.counterparties.add(key);
       working.set(key, state);
       return state;
@@ -192,16 +227,16 @@ export class RuntimePhases {
 
         let hasCode = false;
         if (tx.to !== null && actorIsActive) {
-          hasCode = await this.#dependencies.destinationHasCode(tx.to, tx.blockNumber);
+          hasCode = await this.#rpc(
+            "destinationHasCode",
+            () => this.#dependencies.destinationHasCode(tx.to!, tx.blockNumber),
+            { blockNumber: tx.blockNumber, address: tx.to },
+          );
         }
 
         const wallets = new Map<string, Address>();
-        if (actorIsActive) {
-          wallets.set(lower(fromCreature!.wallet), fromCreature!.wallet);
-        }
-        if (peerIsActive) {
-          wallets.set(lower(toCreature!.wallet), toCreature!.wallet);
-        }
+        if (actorIsActive) wallets.set(lower(fromCreature!.wallet), fromCreature!.wallet);
+        if (peerIsActive) wallets.set(lower(toCreature!.wallet), toCreature!.wallet);
 
         for (const wallet of wallets.values()) {
           const creature = creatureByWallet.get(lower(wallet))!;
@@ -233,6 +268,16 @@ export class RuntimePhases {
         }
       }
     }
+
+    let classifiedCount = 0;
+    for (const activities of this.#activities.values()) classifiedCount += activities.length;
+    this.#logger.info("activities_classified", {
+      classifiedCount,
+      walletCount: this.#activities.size,
+      peerEncounterCount: this.#peerEncounters.length,
+      fromBlock: range.fromBlock,
+      toBlock: range.toBlock,
+    });
   }
 
   async persistEpochs(): Promise<void> {
@@ -263,42 +308,51 @@ export class RuntimePhases {
       }
       for (const update of this.#seenUpdates) {
         if (update.kind === "counterparty") {
-          this.#dependencies.store.recordCounterparty(
-            update.wallet,
-            update.value,
-            update.blockNumber,
-          );
+          this.#dependencies.store.recordCounterparty(update.wallet, update.value, update.blockNumber);
         } else if (update.kind === "contract") {
-          this.#dependencies.store.recordContractDestination(
-            update.wallet,
-            update.value,
-            update.blockNumber,
-          );
+          this.#dependencies.store.recordContractDestination(update.wallet, update.value, update.blockNumber);
         } else {
-          this.#dependencies.store.recordSelector(
-            update.wallet,
-            update.value,
-            update.blockNumber,
-          );
+          this.#dependencies.store.recordSelector(update.wallet, update.value, update.blockNumber);
         }
       }
       for (const block of this.#blocks) {
         this.#dependencies.store.recordProcessedBlock(block.number, block.hash, block.parentHash);
       }
     });
+
+    this.#logger.info("epoch_closed", {
+      fromBlock: range.fromBlock,
+      toBlock: range.toBlock,
+      epochCount: summaries.length,
+      peerEncounterCount: this.#peerEncounters.length,
+    });
   }
 
   async submitEpochs(): Promise<void> {
-    await this.#dependencies.submitPending();
+    await this.#rpc("submitPending", () => this.#dependencies.submitPending());
   }
 
   async runLifeKeeper(): Promise<void> {
     const [candidates, now] = await Promise.all([
-      this.#dependencies.getLifeCandidates(),
-      this.#dependencies.now(),
+      this.#rpc("getLifeCandidates", () => this.#dependencies.getLifeCandidates()),
+      this.#rpc("now", () => this.#dependencies.now()),
     ]);
     for (const tokenId of dueLifeTicks(candidates, now)) {
-      await this.#dependencies.sendLifeTick(tokenId);
+      try {
+        await this.#rpc(
+          "sendLifeTick",
+          () => this.#dependencies.sendLifeTick(tokenId),
+          { tokenId },
+        );
+        this.#logger.info("keeper_tick_result", { tokenId, status: "success" });
+      } catch (error) {
+        this.#logger.error("keeper_tick_result", {
+          tokenId,
+          status: "failed",
+          ...errorLogFields(error),
+        });
+        throw error;
+      }
     }
   }
 
@@ -355,6 +409,41 @@ export class RuntimePhases {
       if (index > 0 && blocks[index]!.parentHash.toLowerCase() !== blocks[index - 1]!.hash.toLowerCase()) {
         throw new Error(`broken parent hash link at block ${expected}`);
       }
+    }
+  }
+
+  #assertDurableParent(blocks: readonly ObservedBlock[], range: BlockRange): void {
+    if (blocks.length === 0 || range.fromBlock === 0n) return;
+    const previous = this.#dependencies.store.processedBlock(range.fromBlock - 1n);
+    if (previous === null) return;
+    const first = blocks[0]!;
+    if (first.parentHash.toLowerCase() === previous.hash.toLowerCase()) return;
+
+    const reason = `deep reorg detected at block ${first.number}: expected parent ${previous.hash}, got ${first.parentHash}`;
+    this.#dependencies.store.engageFailStop(reason);
+    this.#logger.error("reorg_detected", {
+      blockNumber: first.number,
+      expectedParentHash: previous.hash,
+      observedParentHash: first.parentHash,
+      failStop: true,
+    });
+    throw new Error(reason);
+  }
+
+  async #rpc<T>(
+    operation: string,
+    call: () => Promise<T>,
+    context: Record<string, unknown> = {},
+  ): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
+      this.#logger.error("rpc_failed", {
+        operation,
+        ...context,
+        ...errorLogFields(error),
+      });
+      throw error;
     }
   }
 
