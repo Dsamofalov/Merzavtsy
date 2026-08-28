@@ -120,9 +120,9 @@ describe("verified registered-peer activity", () => {
   });
 
   it("binds both registered token owners and the peer nonce", async () => {
-    const { alice, bob, oracle, makePeer, signPeer } = await networkHelpers.loadFixture(deployPeerFixture);
+    const { alice, bob, outsider, oracle, makePeer, signPeer } = await networkHelpers.loadFixture(deployPeerFixture);
 
-    const wrongPeerOwner = makePeer({ peerWallet: alice.account.address });
+    const wrongPeerOwner = makePeer({ peerWallet: outsider.account.address });
     await viem.assertions.revertWithCustomError(
       oracle.write.submitPeer([wrongPeerOwner, await signPeer(wrongPeerOwner)], { account: alice.account }),
       oracle,
