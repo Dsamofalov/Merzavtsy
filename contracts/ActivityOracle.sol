@@ -21,10 +21,14 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
     error WalletTokenMismatch();
     error PeerWalletTokenMismatch();
     error ActivityOutOfBounds();
+    error MutationMetricsOutOfBounds();
     error DigestAlreadyProcessed();
     error EpochAlreadyProcessed();
+    error MutationMetricsAlreadyProcessed();
+    error MutationMetricsBeforeActivity();
     error PeerEncounterAlreadyProcessed();
     error InvalidNonce();
+    error InvalidMutationNonce();
     error InvalidPeerNonce();
     error InvalidBlockRange();
     error BlockRangeOverlap();
@@ -40,7 +44,10 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
     uint16 public constant MAX_MUTATION_COUNTER = 1_000;
 
     bytes32 private constant ACTIVITY_TYPEHASH = keccak256(
-        "ActivityAttestation(address wallet,uint256 tokenId,uint256 chainId,uint64 fromBlock,uint64 toBlock,bytes32 epochId,bytes32 activityDigest,uint64 xpDelta,int16[8] personalityDeltas,int16[5] needDeltas,uint16[10] categoryCounters,uint16[4] mutationCounters,uint256 nonce,uint256 deadline)"
+        "ActivityAttestation(address wallet,uint256 tokenId,uint256 chainId,uint64 fromBlock,uint64 toBlock,bytes32 epochId,bytes32 activityDigest,uint64 xpDelta,int16[8] personalityDeltas,int16[5] needDeltas,uint16[10] categoryCounters,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant MUTATION_METRICS_TYPEHASH = keccak256(
+        "MutationMetricsAttestation(address wallet,uint256 tokenId,uint256 chainId,bytes32 epochId,bytes32 activityDigest,uint16[4] mutationCounters,uint256 nonce,uint256 deadline)"
     );
     bytes32 private constant PEER_TYPEHASH = keccak256(
         "PeerAttestation(address actorWallet,uint256 actorTokenId,address peerWallet,uint256 peerTokenId,uint256 chainId,uint64 blockNumber,bytes32 encounterDigest,uint256 nonce,uint256 deadline)"
@@ -54,6 +61,9 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
     mapping(address wallet => uint256 nonce) public nonces;
     mapping(uint256 tokenId => uint64 toBlock) public lastToBlock;
 
+    mapping(uint256 tokenId => mapping(bytes32 epochId => bool consumed)) public processedMutationEpoch;
+    mapping(address wallet => uint256 nonce) public mutationNonces;
+
     mapping(bytes32 encounterDigest => bool consumed) public processedPeerEncounter;
     mapping(address wallet => uint256 nonce) public peerNonces;
 
@@ -65,6 +75,12 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
         uint64 fromBlock,
         uint64 toBlock,
         uint64 xpDelta
+    );
+    event MutationMetricsAccepted(
+        uint256 indexed tokenId,
+        bytes32 indexed epochId,
+        bytes32 indexed activityDigest,
+        uint16[4] mutationCounters
     );
     event PeerAccepted(
         uint256 indexed actorTokenId,
@@ -99,21 +115,15 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
     ) external whenNotPaused {
         if (attestation.chainId != block.chainid) revert WrongChain();
         if (block.timestamp > attestation.deadline) revert AttestationExpired();
-        if (identity.ownerOf(attestation.tokenId) != attestation.wallet) {
-            revert WalletTokenMismatch();
-        }
+        if (identity.ownerOf(attestation.tokenId) != attestation.wallet) revert WalletTokenMismatch();
         if (!_withinBounds(attestation)) revert ActivityOutOfBounds();
         if (processedDigest[attestation.activityDigest]) revert DigestAlreadyProcessed();
-        if (processedEpoch[attestation.tokenId][attestation.epochId]) {
-            revert EpochAlreadyProcessed();
-        }
+        if (processedEpoch[attestation.tokenId][attestation.epochId]) revert EpochAlreadyProcessed();
         if (attestation.nonce != nonces[attestation.wallet]) revert InvalidNonce();
         if (attestation.fromBlock > attestation.toBlock) revert InvalidBlockRange();
 
         uint64 previousToBlock = lastToBlock[attestation.tokenId];
-        if (previousToBlock != 0 && attestation.fromBlock <= previousToBlock) {
-            revert BlockRangeOverlap();
-        }
+        if (previousToBlock != 0 && attestation.fromBlock <= previousToBlock) revert BlockRangeOverlap();
 
         bytes32 digest = _hashTypedDataV4(_structHash(attestation));
         address signer = ECDSA.recover(digest, signature);
@@ -125,7 +135,6 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
         lastToBlock[attestation.tokenId] = attestation.toBlock;
 
         world.applyVerifiedActivity(attestation);
-
         emit ActivityAccepted(
             attestation.tokenId,
             attestation.wallet,
@@ -134,6 +143,36 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
             attestation.fromBlock,
             attestation.toBlock,
             attestation.xpDelta
+        );
+    }
+
+    function submitMutationMetrics(
+        IMerzavetsWorld.MutationMetricsAttestation calldata attestation,
+        bytes calldata signature
+    ) external whenNotPaused {
+        if (attestation.chainId != block.chainid) revert WrongChain();
+        if (block.timestamp > attestation.deadline) revert AttestationExpired();
+        if (identity.ownerOf(attestation.tokenId) != attestation.wallet) revert WalletTokenMismatch();
+        if (!processedEpoch[attestation.tokenId][attestation.epochId]) revert MutationMetricsBeforeActivity();
+        if (processedMutationEpoch[attestation.tokenId][attestation.epochId]) revert MutationMetricsAlreadyProcessed();
+        if (attestation.nonce != mutationNonces[attestation.wallet]) revert InvalidMutationNonce();
+        for (uint256 i = 0; i < attestation.mutationCounters.length; ++i) {
+            if (attestation.mutationCounters[i] > MAX_MUTATION_COUNTER) revert MutationMetricsOutOfBounds();
+        }
+
+        bytes32 digest = _hashTypedDataV4(_mutationStructHash(attestation));
+        address signer = ECDSA.recover(digest, signature);
+        if (!hasRole(ORACLE_SIGNER_ROLE, signer)) revert UnauthorizedSigner();
+
+        processedMutationEpoch[attestation.tokenId][attestation.epochId] = true;
+        mutationNonces[attestation.wallet] = attestation.nonce + 1;
+        world.applyVerifiedMutationMetrics(attestation.tokenId, attestation.mutationCounters);
+
+        emit MutationMetricsAccepted(
+            attestation.tokenId,
+            attestation.epochId,
+            attestation.activityDigest,
+            attestation.mutationCounters
         );
     }
 
@@ -147,15 +186,9 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
             attestation.actorTokenId == attestation.peerTokenId
                 || attestation.actorWallet == attestation.peerWallet
         ) revert InvalidPeerEncounter();
-        if (identity.ownerOf(attestation.actorTokenId) != attestation.actorWallet) {
-            revert WalletTokenMismatch();
-        }
-        if (identity.ownerOf(attestation.peerTokenId) != attestation.peerWallet) {
-            revert PeerWalletTokenMismatch();
-        }
-        if (processedPeerEncounter[attestation.encounterDigest]) {
-            revert PeerEncounterAlreadyProcessed();
-        }
+        if (identity.ownerOf(attestation.actorTokenId) != attestation.actorWallet) revert WalletTokenMismatch();
+        if (identity.ownerOf(attestation.peerTokenId) != attestation.peerWallet) revert PeerWalletTokenMismatch();
+        if (processedPeerEncounter[attestation.encounterDigest]) revert PeerEncounterAlreadyProcessed();
         if (attestation.nonce != peerNonces[attestation.actorWallet]) revert InvalidPeerNonce();
 
         bytes32 digest = _hashTypedDataV4(_peerStructHash(attestation));
@@ -165,12 +198,7 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
         processedPeerEncounter[attestation.encounterDigest] = true;
         peerNonces[attestation.actorWallet] = attestation.nonce + 1;
 
-        world.applyVerifiedPeerContact(
-            attestation.actorTokenId,
-            attestation.peerTokenId,
-            attestation.encounterDigest
-        );
-
+        world.applyVerifiedPeerContact(attestation.actorTokenId, attestation.peerTokenId, attestation.encounterDigest);
         emit PeerAccepted(
             attestation.actorTokenId,
             attestation.peerTokenId,
@@ -208,6 +236,25 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
                 keccak256(abi.encode(attestation.personalityDeltas)),
                 keccak256(abi.encode(attestation.needDeltas)),
                 keccak256(abi.encode(attestation.categoryCounters)),
+                attestation.nonce,
+                attestation.deadline
+            )
+        );
+    }
+
+    function _mutationStructHash(IMerzavetsWorld.MutationMetricsAttestation calldata attestation)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                MUTATION_METRICS_TYPEHASH,
+                attestation.wallet,
+                attestation.tokenId,
+                attestation.chainId,
+                attestation.epochId,
+                attestation.activityDigest,
                 keccak256(abi.encode(attestation.mutationCounters)),
                 attestation.nonce,
                 attestation.deadline
@@ -242,7 +289,6 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
         returns (bool)
     {
         if (attestation.xpDelta > MAX_XP_DELTA) return false;
-
         for (uint256 i = 0; i < attestation.personalityDeltas.length; ++i) {
             if (!_absWithin(attestation.personalityDeltas[i], MAX_PERSONALITY_DELTA)) return false;
         }
@@ -252,10 +298,6 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
         for (uint256 i = 0; i < attestation.categoryCounters.length; ++i) {
             if (attestation.categoryCounters[i] > MAX_CATEGORY_COUNTER) return false;
         }
-        for (uint256 i = 0; i < attestation.mutationCounters.length; ++i) {
-            if (attestation.mutationCounters[i] > MAX_MUTATION_COUNTER) return false;
-        }
-
         return true;
     }
 
