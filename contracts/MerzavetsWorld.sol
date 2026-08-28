@@ -127,6 +127,13 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint64 xpDelta,
         uint16 level
     );
+    event VerifiedPeerContact(
+        uint256 indexed actorTokenId,
+        uint256 indexed peerTokenId,
+        bytes32 indexed encounterDigest,
+        int16 affinity,
+        int16 trust
+    );
     event Hibernated(uint256 indexed tokenId, uint256 inactivity);
     event Awakened(uint256 indexed tokenId, uint32 awakeningCount);
     event MutationsUnlocked(uint256 indexed tokenId, uint256 newBits, uint256 fullMask);
@@ -276,6 +283,36 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         );
     }
 
+    /// @notice Applies a weak directed relationship change proven by the oracle
+    /// from an ordinary transaction between two registered wallets.
+    function applyVerifiedPeerContact(
+        uint256 actorTokenId,
+        uint256 peerTokenId,
+        bytes32 encounterDigest
+    ) external override {
+        if (msg.sender != oracle) revert OnlyOracle();
+        CreatureState storage actor = _states[actorTokenId];
+        if (actor.level == 0 || _states[peerTokenId].level == 0) revert CreatureNotInitialized();
+        if (actorTokenId == peerTokenId) revert InvalidPeer();
+
+        SocialRules.Deltas memory delta = SocialRules.forPeerContact(actor.sociability);
+        Relationship storage relationship = _relationships[actorTokenId][peerTokenId];
+        _applyRelationshipDelta(relationship, delta);
+
+        preferredPeer[actorTokenId] = peerTokenId;
+        actor.socialNeed = MerzavetsMath.clampStat(int256(uint256(actor.socialNeed)) - 100);
+        actor.boredom = MerzavetsMath.clampStat(int256(uint256(actor.boredom)) - 40);
+        _incrementMeaningfulEvent(actorTokenId);
+
+        emit VerifiedPeerContact(
+            actorTokenId,
+            peerTokenId,
+            encounterDigest,
+            relationship.affinity,
+            relationship.trust
+        );
+    }
+
     /// @notice Performs a player-triggered structured social action.
     function socialize(uint256 actorTokenId, uint256 targetTokenId, uint8 action) external {
         CreatureState storage actor = _states[actorTokenId];
@@ -366,6 +403,22 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
             actor.chaos
         );
 
+        _applyRelationshipDelta(relationship, delta);
+
+        emit SocialActionTaken(
+            actorTokenId,
+            targetTokenId,
+            action,
+            relationship.affinity,
+            relationship.trust,
+            relationship.rivalry
+        );
+    }
+
+    function _applyRelationshipDelta(
+        Relationship storage relationship,
+        SocialRules.Deltas memory delta
+    ) private {
         relationship.affinity = MerzavetsMath.clampSigned(
             int256(relationship.affinity) + int256(delta.affinity),
             -10_000,
@@ -393,15 +446,6 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
             relationship.interactionCount += 1;
         }
         relationship.lastInteractionAt = uint40(block.timestamp);
-
-        emit SocialActionTaken(
-            actorTokenId,
-            targetTokenId,
-            action,
-            relationship.affinity,
-            relationship.trust,
-            relationship.rivalry
-        );
     }
 
     function _selectLifeIntent(uint256 tokenId, CreatureState storage state) private view returns (uint8) {
