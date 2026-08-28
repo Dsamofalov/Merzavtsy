@@ -21,3 +21,10 @@ jobs:
         run: npm ci
       - name: Verify repository
         run: npm run verify
+      - name: Build daemon image
+        run: docker build --tag merzavtsy-daemon:ci .
+      - name: Validate compose configuration
+        run: |
+          cp .env.example .env
+          mkdir -p deployments
+          docker compose config --quiet
