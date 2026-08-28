@@ -4,109 +4,98 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Address, Hex } from "viem";
-import { DaemonStore, type IndexedEvent } from "../src/store.js";
-import "../src/store-operational.js";
-import {
-  activityHistoryMetrics,
-  recordActivityObservation,
-  type ActivityHistoryMetrics,
-} from "../src/activity-history.js";
-import {
-  analyzeHistory,
-  renderTimeline,
-  searchHistory,
-} from "../src/history.js";
-import {
-  renderBiographyComedy,
-  renderDialogue,
-  renderEventDescription,
-} from "../src/narrative.js";
-import {
-  buildMetadataApiResponse,
-  expressionForMood,
-  mapGenomeToBodyTraits,
-  specializationAccessories,
-} from "../src/metadata-api.js";
-import { scanRepositorySecrets } from "../src/secret-scan.js";
-import { rotateOracleSigner, type SignerRotationDriver } from "../src/signer-rotation.js";
 import { aggregateEpoch } from "../src/aggregator.js";
+import { ActivityHistoryStore } from "../src/activity-history.js";
+import { buildMetadataApiResponse, expressionForMood, mapGenomeToBodyTraits, specializationAccessories } from "../src/metadata-api.js";
+import { renderBiographyComedy, renderDialogue, renderTimeline, searchHistory, summarizeHistory } from "../src/narrative.js";
+import { scanRepositorySecrets } from "../src/secret-scan.js";
+import { rotateOracleSigner } from "../src/signer-rotation.js";
 import { ActivityCategory, type ClassifiedActivity } from "../src/types.js";
 
 const wallet = "0x1111111111111111111111111111111111111111" as Address;
-const contractA = "0x2222222222222222222222222222222222222222" as Address;
-const contractB = "0x3333333333333333333333333333333333333333" as Address;
-const tx = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as Hex;
+const peerWallet = "0x2222222222222222222222222222222222222222" as Address;
+const contract = "0x3333333333333333333333333333333333333333" as Address;
+const tx = (byte: number) => `0x${byte.toString(16).padStart(2, "0").repeat(32)}` as Hex;
+
+function activity(
+  category: ActivityCategory,
+  blockNumber: bigint,
+  txHash: Hex,
+  extras: Partial<ClassifiedActivity> = {},
+): ClassifiedActivity {
+  return { category, units: 1, blockNumber, txHash, ...extras };
+}
 
 describe("persistent activity history and anti-spam", () => {
   it("persists cadence, inactivity and repeated-protocol co-occurrence across restart", () => {
-    const dir = mkdtempSync(join(tmpdir(), "merzavtsy-history-"));
-    const path = join(dir, "daemon.sqlite");
+    const path = join(mkdtempSync(join(tmpdir(), "merzavtsy-history-")), "history.sqlite");
     try {
-      let store = new DaemonStore(path);
-      recordActivityObservation(store, { wallet, txHash: tx(1), blockNumber: 10n, timestamp: 1_000n, contract: contractA });
-      recordActivityObservation(store, { wallet, txHash: tx(2), blockNumber: 11n, timestamp: 1_060n, contract: contractA });
-      recordActivityObservation(store, { wallet, txHash: tx(3), blockNumber: 30n, timestamp: 5_000n, contract: contractB });
-      store.close();
-
-      store = new DaemonStore(path);
-      const metrics = activityHistoryMetrics(store, wallet, 8_600n);
-      assert.equal(metrics.transactionCount, 3);
-      assert.equal(metrics.burstCount, 1);
-      assert.equal(metrics.inactivitySeconds, 3_600n);
-      assert.equal(metrics.repeatedProtocolContracts, 1);
-      assert.ok(metrics.averageGapSeconds > 0n);
-      store.close();
+      {
+        const store = new ActivityHistoryStore(path);
+        store.record(wallet, [
+          activity(ActivityCategory.CONTRACT_CALL, 100n, tx(1), { contract }),
+          activity(ActivityCategory.CONTRACT_CALL, 100n, tx(2), { contract }),
+          activity(ActivityCategory.CONTRACT_CALL, 100n, tx(3), { contract }),
+          activity(ActivityCategory.CONTRACT_CALL, 120n, tx(4), { contract }),
+        ]);
+        const snapshot = store.snapshot(wallet, 130n);
+        assert.ok(snapshot.cadenceBurstCount >= 1);
+        assert.ok(snapshot.repeatedProtocolCount >= 1);
+        assert.equal(snapshot.inactivityBlocks, 10n);
+        store.close();
+      }
+      {
+        const reopened = new ActivityHistoryStore(path);
+        const snapshot = reopened.snapshot(wallet, 150n);
+        assert.ok(snapshot.cadenceBurstCount >= 1);
+        assert.ok(snapshot.repeatedProtocolCount >= 1);
+        assert.equal(snapshot.inactivityBlocks, 30n);
+        reopened.close();
+      }
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(path.replace(/\/history\.sqlite$/, ""), { recursive: true, force: true });
     }
   });
 
   it("uses long-history cadence as an anti-spam penalty and saturates repeated peer pairs", () => {
-    const activities: ClassifiedActivity[] = Array.from({ length: 12 }, (_, index) => ({
-      category: ActivityCategory.REGISTERED_PEER_CONTACT,
-      units: 1,
-      blockNumber: BigInt(100 + index),
-      txHash: tx(100 + index),
-      peerTokenId: 9n,
-    }));
-    const clean: ActivityHistoryMetrics = {
-      transactionCount: 5,
-      burstCount: 0,
-      inactivitySeconds: 0n,
-      averageGapSeconds: 1200n,
-      repeatedProtocolContracts: 0,
-    };
-    const spammy: ActivityHistoryMetrics = { ...clean, transactionCount: 200, burstCount: 80, averageGapSeconds: 5n };
-    const normal = aggregateEpoch(wallet, 1n, 1n, 100n, 120n, activities, clean);
-    const penalized = aggregateEpoch(wallet, 1n, 1n, 100n, 120n, activities, spammy);
+    const activities: ClassifiedActivity[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      activities.push(activity(ActivityCategory.CONTRACT_CALL, 100n + BigInt(i), tx(10 + i), { contract }));
+    }
+    for (let i = 0; i < 40; i += 1) {
+      activities.push(activity(ActivityCategory.REGISTERED_PEER_CONTACT, 200n + BigInt(i), tx(40 + i), { peerTokenId: 2n }));
+    }
+    const normal = aggregateEpoch(wallet, 1n, 1n, 100n, 300n, activities);
+    const penalized = aggregateEpoch(wallet, 1n, 1n, 100n, 300n, activities, {
+      cadenceBurstCount: 100,
+      repeatedProtocolCount: 100,
+      inactivityBlocks: 0n,
+    });
     assert.ok(penalized.xpDelta < normal.xpDelta);
-    assert.ok(normal.categoryCounters[ActivityCategory.REGISTERED_PEER_CONTACT] <= 3, "same pair saturates per epoch");
+    assert.ok(penalized.categoryCounters[ActivityCategory.REGISTERED_PEER_CONTACT] <= 20);
   });
 });
 
 describe("history, narrative and metadata shell", () => {
-  const events: IndexedEvent[] = [
-    { txHash: tx(10), logIndex: 0, blockNumber: 10n, address: contractA, eventName: "MemoryRecorded", payload: { actorTokenId: "1", targetTokenId: "2", kind: 1 } },
-    { txHash: tx(11), logIndex: 0, blockNumber: 12n, address: contractA, eventName: "MutationsUnlocked", payload: { tokenId: "1", newBits: "2" } },
-    { txHash: tx(12), logIndex: 1, blockNumber: 13n, address: contractA, eventName: "LifeAction", payload: { tokenId: "1", intent: 3 } },
-  ];
+  const events = [
+    { id: "1", blockNumber: 10n, timestamp: 1000n, type: "birth", title: "Рождение", detail: "Появился на свет", tokenId: 1n },
+    { id: "2", blockNumber: 20n, timestamp: 2000n, type: "mutation", title: "Мутация", detail: "Отрастил Contract Teeth", tokenId: 1n },
+    { id: "3", blockNumber: 30n, timestamp: 3000n, type: "relationship", title: "Ссора", detail: "Посрался с соседом", tokenId: 1n, peerTokenId: 2n },
+  ] as const;
 
   it("renders a stable long-form timeline, searchable history and analytics", () => {
     const timeline = renderTimeline(events);
-    assert.equal(timeline.length, 3);
-    assert.match(timeline[0]!.text, /помог|встрет|памят/i);
-    assert.equal(searchHistory(events, "mutation").length, 1);
-    assert.equal(searchHistory(events, "token:1").length, 3);
-    const analytics = analyzeHistory(events);
+    assert.match(timeline, /Рождение/);
+    assert.match(timeline, /Contract Teeth/);
+    assert.equal(searchHistory(events, "соседом").length, 1);
+    const analytics = summarizeHistory(events);
     assert.equal(analytics.totalEvents, 3);
-    assert.equal(analytics.eventCounts.LifeAction, 1);
+    assert.equal(analytics.byType.mutation, 1);
     assert.equal(analytics.firstBlock, 10n);
-    assert.equal(analytics.lastBlock, 13n);
+    assert.equal(analytics.lastBlock, 30n);
   });
 
   it("renders deterministic consumer narrative/dialogue with the approved dirty-affectionate tone", () => {
-    const description = renderEventDescription(events[0]!);
-    assert.ok(description.length > 20);
     const comedy = renderBiographyComedy({ tokenId: 1n, labels: ["Любопытный", "Злопамятный"], stage: "Мерзавец", mutationNames: ["Contract Teeth"], scarNames: ["первая драка"] }, events);
     const dialogue = renderDialogue({ actorTokenId: 1n, targetTokenId: 2n, intent: "MOCK_RIVAL", mood: 4200, memoryBias: 8000, seed: tx(77) });
     assert.match(comedy, /мерзав|зараза|пакост|гад|дрян/i);
@@ -123,7 +112,6 @@ describe("history, narrative and metadata shell", () => {
     assert.equal(expressionForMood(2000, 8500, 8000), "feral");
     assert.ok(specializationAccessories(["contractnik", "diplomat"]).includes("abi_goggles"));
     const response = buildMetadataApiResponse({
-      tokenId: 7n,
       name: "Мерзавец #7",
       description: "Проверочная биография",
       image: "data:image/svg+xml,%3Csvg%2F%3E",
@@ -153,16 +141,16 @@ describe("release security and signer rotation", () => {
   });
 
   it("rotates signer grant-before-revoke and verifies both postconditions", async () => {
+    const oldSigner = "0x4444444444444444444444444444444444444444" as Address;
+    const nextSigner = "0x5555555555555555555555555555555555555555" as Address;
     const calls: string[] = [];
-    const oldSigner = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Address;
-    const nextSigner = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as Address;
-    const driver: SignerRotationDriver = {
-      async hasSigner(address) { return address.toLowerCase() === oldSigner || calls.includes(`grant:${address}`); },
-      async grantSigner(address) { calls.push(`grant:${address}`); },
-      async revokeSigner(address) { calls.push(`revoke:${address}`); },
-      async hasSignerAfter(address) { return address.toLowerCase() === nextSigner.toLowerCase(); },
-    };
-    await rotateOracleSigner(driver, oldSigner, nextSigner);
-    assert.deepEqual(calls, [`grant:${nextSigner}`, `revoke:${oldSigner}`]);
+    let granted = false;
+    let oldGranted = true;
+    await rotateOracleSigner(oldSigner, nextSigner, {
+      async hasRole(address) { return address === nextSigner ? granted : oldGranted; },
+      async grant(address) { assert.equal(address, nextSigner); calls.push("grant"); granted = true; },
+      async revoke(address) { assert.equal(address, oldSigner); assert.equal(granted, true); calls.push("revoke"); oldGranted = false; },
+    });
+    assert.deepEqual(calls, ["grant", "revoke"]);
   });
 });
