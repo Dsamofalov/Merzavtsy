@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Address, Hex } from "viem";
+import type { ActivityAttestation } from "../src/attestation.js";
 import {
   ProductionIo,
   type ProductionIoDependencies,
@@ -121,7 +122,7 @@ describe("ProductionIo", () => {
     assert.equal(await gateway.epochConsumed(7n, digest), false);
     assert.equal(await gateway.peerConsumed(digest), false);
 
-    const activity = {
+    const activity: ActivityAttestation = {
       wallet: owner,
       tokenId: 7n,
       chainId: 11155111n,
@@ -130,9 +131,9 @@ describe("ProductionIo", () => {
       epochId: digest,
       activityDigest: digest,
       xpDelta: 1n,
-      personalityDeltas: [0, 0, 0, 0, 0, 0, 0, 0] as const,
-      needDeltas: [0, 0, 0, 0, 0] as const,
-      categoryCounters: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0] as const,
+      personalityDeltas: [0, 0, 0, 0, 0, 0, 0, 0],
+      needDeltas: [0, 0, 0, 0, 0],
+      categoryCounters: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       nonce: 4n,
       deadline: 2_000_000_000n,
     };
