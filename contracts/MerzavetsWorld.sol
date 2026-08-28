@@ -520,13 +520,12 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     ) private view returns (SocialRules.Deltas memory delta) {
         CreatureState storage actor = _states[actorTokenId];
         delta = SocialRules.forAction(action, actor.aggression, actor.sociability, actor.chaos);
-        uint256 seed = _socialSeed(actorTokenId, targetTokenId, action);
         return _applySocialModifiers(
             delta,
             action,
             _states[targetTokenId],
             _relationships[actorTokenId][targetTokenId],
-            seed
+            _socialSeed(actorTokenId, targetTokenId, action)
         );
     }
 
@@ -591,24 +590,57 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         Relationship storage relationship,
         uint256 seed
     ) private view returns (SocialRules.Deltas memory) {
+        if (action == uint8(SocialAction.GREET) || action == uint8(SocialAction.HELP)) {
+            return _applyPositiveSocialModifiers(delta, target, relationship, seed);
+        }
+        return _applyHostileSocialModifiers(delta, target, relationship, seed);
+    }
+
+    function _applyPositiveSocialModifiers(
+        SocialRules.Deltas memory delta,
+        CreatureState storage target,
+        Relationship storage relationship,
+        uint256 seed
+    ) private view returns (SocialRules.Deltas memory) {
+        int256 historyWeight = _socialHistoryWeight(relationship);
         int256 jitter = int256(seed % 41) - 20;
-        int256 warmth = int256(uint256(target.sociability)) / 250;
+        delta.affinity = _delta(
+            int256(delta.affinity)
+                + int256(uint256(target.sociability)) / 250
+                - int256(uint256(target.aggression)) / 500
+                + historyWeight
+                + jitter
+        );
+        delta.trust = _delta(
+            int256(delta.trust)
+                + int256(uint256(target.stability)) / 500
+                + historyWeight / 2
+                + jitter / 2
+        );
+        return delta;
+    }
+
+    function _applyHostileSocialModifiers(
+        SocialRules.Deltas memory delta,
+        CreatureState storage target,
+        Relationship storage relationship,
+        uint256 seed
+    ) private view returns (SocialRules.Deltas memory) {
+        int256 historyWeight = _socialHistoryWeight(relationship);
+        int256 jitter = int256(seed % 41) - 20;
         int256 resistance = int256(uint256(target.stability)) / 250;
         int256 threat = int256(uint256(target.aggression)) / 250;
+        delta.affinity = _delta(int256(delta.affinity) - resistance / 2 - historyWeight + jitter);
+        delta.trust = _delta(int256(delta.trust) - resistance / 3 - historyWeight / 2 + jitter / 2);
+        delta.rivalry = _delta(int256(delta.rivalry) + threat / 2 + historyWeight);
+        delta.fear = _delta(int256(delta.fear) + threat / 3);
+        return delta;
+    }
+
+    function _socialHistoryWeight(Relationship storage relationship) private view returns (int256) {
         uint256 cappedInteractions =
             relationship.interactionCount > 20 ? 20 : uint256(relationship.interactionCount);
-        int256 historyWeight = int256(cappedInteractions);
-
-        if (action == uint8(SocialAction.GREET) || action == uint8(SocialAction.HELP)) {
-            delta.affinity = _delta(int256(delta.affinity) + warmth - threat / 2 + historyWeight + jitter);
-            delta.trust = _delta(int256(delta.trust) + resistance / 2 + historyWeight / 2 + jitter / 2);
-        } else {
-            delta.affinity = _delta(int256(delta.affinity) - resistance / 2 - historyWeight + jitter);
-            delta.trust = _delta(int256(delta.trust) - resistance / 3 - historyWeight / 2 + jitter / 2);
-            delta.rivalry = _delta(int256(delta.rivalry) + threat / 2 + historyWeight);
-            delta.fear = _delta(int256(delta.fear) + threat / 3);
-        }
-        return delta;
+        return int256(cappedInteractions);
     }
 
     function _evaluateRelationshipMilestones(
