@@ -53,4 +53,19 @@ library SocialRules {
         delta.fear = int16(uint16(350 + temper));
         delta.rivalry = int16(uint16(250 + temper));
     }
+
+    /// @notice Small positive directed effect of a verified normal-wallet encounter.
+    /// @dev Intentionally much weaker than an explicit HELP/GREET action because a
+    /// watcher-derived contact is evidence of interaction, not evidence of intent.
+    function forPeerContact(uint16 sociability)
+        internal
+        pure
+        returns (Deltas memory delta)
+    {
+        uint16 charm = uint16(uint256(sociability) / 250); // 0..40
+        delta.affinity = int16(uint16(40 + charm));
+        delta.trust = int16(uint16(25 + charm / 2));
+        delta.respect = 10;
+        delta.rivalry = -5;
+    }
 }
