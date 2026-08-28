@@ -1,0 +1,162 @@
+import {
+  hashTypedData,
+  keccak256,
+  recoverTypedDataAddress,
+  toHex,
+  type Address,
+  type Hex,
+} from "viem";
+import { ACTIVITY_TYPES, activityDomain } from "./attestation.js";
+import type { SignedActivity } from "./submitter.js";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
+
+export interface OpenActivityFeedEntry extends SignedActivity {
+  signer: Address;
+  valid: boolean;
+  typedDataHash: Hex;
+  leaf: Hex;
+}
+
+export interface ActivityAuditFinding {
+  code:
+    | "INVALID_SIGNATURE"
+    | "DUPLICATE_EPOCH"
+    | "DUPLICATE_DIGEST"
+    | "OVERLAPPING_RANGE"
+    | "INVALID_RANGE";
+  index: number;
+  detail: string;
+}
+
+export interface ActivityMerkleProof {
+  root: Hex;
+  siblings: Hex[];
+}
+
+function canonicalLeaf(digest: Hex, signature: Hex): Hex {
+  return keccak256(toHex(`${digest.toLowerCase()}:${signature.toLowerCase()}`));
+}
+
+function pairHash(a: Hex, b: Hex): Hex {
+  const [first, second] = a.toLowerCase() <= b.toLowerCase() ? [a, b] : [b, a];
+  return keccak256(`0x${first.slice(2)}${second.slice(2)}` as Hex);
+}
+
+export async function buildOpenActivityFeed(
+  signedArchive: readonly SignedActivity[],
+  oracleAddress: Address,
+  allowedSigners: readonly Address[] = [],
+): Promise<OpenActivityFeedEntry[]> {
+  const allowed = new Set(allowedSigners.map((item) => item.toLowerCase()));
+  const result: OpenActivityFeedEntry[] = [];
+  for (const signed of signedArchive) {
+    const value = signed.attestation;
+    const domain = activityDomain(value.chainId, oracleAddress);
+    const typedDataHash = hashTypedData({
+      domain,
+      types: ACTIVITY_TYPES,
+      primaryType: "ActivityAttestation",
+      message: value,
+    });
+    let signer = ZERO_ADDRESS;
+    let recovered = false;
+    try {
+      signer = await recoverTypedDataAddress({
+        domain,
+        types: ACTIVITY_TYPES,
+        primaryType: "ActivityAttestation",
+        message: value,
+        signature: signed.signature,
+      });
+      recovered = true;
+    } catch {
+      recovered = false;
+    }
+    const signerAllowed = allowed.size === 0 || allowed.has(signer.toLowerCase());
+    const valid = recovered && signerAllowed && value.fromBlock <= value.toBlock;
+    result.push({
+      attestation: value,
+      signature: signed.signature,
+      signer,
+      valid,
+      typedDataHash,
+      leaf: canonicalLeaf(typedDataHash, signed.signature),
+    });
+  }
+  return result;
+}
+
+export function auditActivityFeed(feed: readonly OpenActivityFeedEntry[]): ActivityAuditFinding[] {
+  const findings: ActivityAuditFinding[] = [];
+  const epochs = new Map<string, number>();
+  const digests = new Map<string, number>();
+  const ranges = new Map<string, Array<{ from: bigint; to: bigint; index: number }>>();
+
+  for (let index = 0; index < feed.length; index += 1) {
+    const entry = feed[index]!;
+    const value = entry.attestation;
+    if (!entry.valid) findings.push({ code: "INVALID_SIGNATURE", index, detail: "signature or authorized signer validation failed" });
+    if (value.fromBlock > value.toBlock) findings.push({ code: "INVALID_RANGE", index, detail: "fromBlock exceeds toBlock" });
+
+    const identity = `${value.chainId}:${value.wallet.toLowerCase()}:${value.tokenId}`;
+    const epochKey = `${identity}:${value.epochId.toLowerCase()}`;
+    const priorEpoch = epochs.get(epochKey);
+    if (priorEpoch !== undefined) findings.push({ code: "DUPLICATE_EPOCH", index, detail: `duplicates feed entry ${priorEpoch}` });
+    else epochs.set(epochKey, index);
+
+    const digestKey = `${identity}:${value.activityDigest.toLowerCase()}`;
+    const priorDigest = digests.get(digestKey);
+    if (priorDigest !== undefined) findings.push({ code: "DUPLICATE_DIGEST", index, detail: `duplicates feed entry ${priorDigest}` });
+    else digests.set(digestKey, index);
+
+    const priorRanges = ranges.get(identity) ?? [];
+    const overlap = priorRanges.find((range) => value.fromBlock <= range.to && value.toBlock >= range.from);
+    if (overlap !== undefined) findings.push({ code: "OVERLAPPING_RANGE", index, detail: `overlaps feed entry ${overlap.index}` });
+    priorRanges.push({ from: value.fromBlock, to: value.toBlock, index });
+    ranges.set(identity, priorRanges);
+  }
+
+  return findings;
+}
+
+function merkleLevel(nodes: readonly Hex[]): Hex[] {
+  if (nodes.length === 0) return [];
+  const result: Hex[] = [];
+  for (let index = 0; index < nodes.length; index += 2) {
+    const left = nodes[index]!;
+    const right = nodes[index + 1] ?? left;
+    result.push(pairHash(left, right));
+  }
+  return result;
+}
+
+export function buildActivityMerkleProof(
+  feed: readonly OpenActivityFeedEntry[],
+  index: number,
+): ActivityMerkleProof {
+  if (!Number.isInteger(index) || index < 0 || index >= feed.length) throw new Error("Merkle proof index out of range");
+  let position = index;
+  let level = feed.map((entry) => entry.leaf);
+  const siblings: Hex[] = [];
+  while (level.length > 1) {
+    const siblingIndex = position % 2 === 0 ? position + 1 : position - 1;
+    siblings.push(level[siblingIndex] ?? level[position]!);
+    level = merkleLevel(level);
+    position = Math.floor(position / 2);
+  }
+  return { root: level[0]!, siblings };
+}
+
+export function activityMerkleRoot(feed: readonly OpenActivityFeedEntry[]): Hex {
+  if (feed.length === 0) return keccak256(toHex("MERZAVTSY_EMPTY_ACTIVITY_FEED_V1"));
+  let level = feed.map((entry) => entry.leaf);
+  while (level.length > 1) level = merkleLevel(level);
+  return level[0]!;
+}
+
+export function verifyActivityMerkleProof(leaf: Hex, siblings: readonly Hex[], root: Hex): boolean {
+  let node = leaf;
+  for (const sibling of siblings) node = pairHash(node, sibling);
+  return node.toLowerCase() === root.toLowerCase();
+}
