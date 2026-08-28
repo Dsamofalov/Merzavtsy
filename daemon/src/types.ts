@@ -52,6 +52,8 @@ export interface ClassifierContext {
   seenCounterparties: ReadonlySet<string>;
   seenSelectors: ReadonlySet<string>;
   highGasThreshold: bigint;
+  /** Minimum value for plain ETH transfers to count toward progression. */
+  minimumMeaningfulWei?: bigint;
   destinationHasCode: boolean;
 }
 
