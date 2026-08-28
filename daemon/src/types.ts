@@ -17,30 +17,9 @@ export enum ActivityCategory {
   SELECTOR_DIVERSITY = 9,
 }
 
-export type CategoryCounters = [
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-];
-
-export type PersonalityDeltas = [
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-];
-
+export type CategoryCounters = [number, number, number, number, number, number, number, number, number, number];
+export type MutationCounters = [number, number, number, number];
+export type PersonalityDeltas = [number, number, number, number, number, number, number, number];
 export type NeedDeltas = [number, number, number, number, number];
 
 export interface ObservedTransaction {
@@ -98,4 +77,10 @@ export interface EpochSummary {
   personalityDeltas: PersonalityDeltas;
   needDeltas: NeedDeltas;
   categoryCounters: CategoryCounters;
+  /**
+   * Explicit mutation-only counters, separate from stable category indexes:
+   * 0 cadence bursts, 1 bridge/network-like observations,
+   * 2 hostile-social observations, 3 repeated protocol co-occurrence.
+   */
+  mutationCounters: MutationCounters;
 }
