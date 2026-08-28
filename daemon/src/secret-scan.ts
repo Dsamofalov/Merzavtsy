@@ -21,7 +21,8 @@ function kindFor(line: string): string | null {
   if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(line)) return "private-key-pem";
   if (/\b(?:ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/.test(line)) return "github-token";
   if (/\bsk-[A-Za-z0-9_-]{24,}\b/.test(line)) return "api-token";
-  if (/\b(?:PRIVATE_KEY|MNEMONIC|SEED_PHRASE|API_SECRET|API_KEY|ACCESS_TOKEN)\b\s*[:=]\s*["']?0x[0-9a-fA-F]{64}\b/i.test(line)) {
+  if (/(?:^|[^A-Z0-9_])(?:[A-Z0-9]+_)*PRIVATE_KEY\s*[:=]\s*["']?0x[0-9a-fA-F]{64}\b/i.test(line)
+    || /\b(?:MNEMONIC|SEED_PHRASE|API_SECRET|API_KEY|ACCESS_TOKEN)\b\s*[:=]\s*["']?0x[0-9a-fA-F]{64}\b/i.test(line)) {
     return "secret-assignment";
   }
   if (/\b(?:MNEMONIC|SEED_PHRASE)\b\s*[:=]\s*["'][a-z]+(?:\s+[a-z]+){11,23}["']/i.test(line)) {
