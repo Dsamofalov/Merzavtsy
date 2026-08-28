@@ -12,6 +12,7 @@
     "daemon": "node --import tsx daemon/src/main.ts",
     "deploy": "node --import tsx scripts/deploy.ts",
     "status": "node --import tsx scripts/status.ts",
+    "smoke:sepolia": "node --import tsx scripts/sepolia-smoke.ts",
     "birth": "node --import tsx scripts/birth.ts",
     "show:state": "node --import tsx scripts/show-state.ts",
     "show:relationship": "node --import tsx scripts/show-relationship.ts",
