@@ -58,6 +58,13 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     uint256 public constant RELATIONSHIP_RIVAL = 1 << 1;
     uint256 public constant RELATIONSHIP_BETRAYED = 1 << 2;
 
+    uint8 public constant MEMORY_MET = 0;
+    uint8 public constant MEMORY_HELPED = 1;
+    uint8 public constant MEMORY_MOCKED = 2;
+    uint8 public constant MEMORY_BETRAYED = 3;
+    uint8 public constant MEMORY_FRIENDSHIP_THRESHOLD = 4;
+    uint8 public constant MEMORY_RIVALRY_THRESHOLD = 5;
+
     int256 private constant FRIEND_AFFINITY_THRESHOLD = 1_000;
     int256 private constant FRIEND_TRUST_THRESHOLD = 800;
     int256 private constant RIVAL_AFFINITY_THRESHOLD = -1_000;
@@ -180,6 +187,12 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint256 indexed milestoneBit,
         uint256 fullMask
     );
+    event MemoryRecorded(
+        uint256 indexed actorTokenId,
+        uint256 indexed targetTokenId,
+        uint8 indexed kind,
+        uint32 interactionCount
+    );
     event LifeAction(uint256 indexed tokenId, uint8 indexed intent, uint32 actionCount);
     event BiographyXp(uint256 indexed tokenId, uint8 indexed source, uint64 amount, uint64 totalXp);
 
@@ -288,6 +301,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         SocialRules.Deltas memory delta = SocialRules.forPeerContact(actor.sociability);
         Relationship storage relationship = _relationships[actorTokenId][peerTokenId];
         _applyRelationshipDelta(relationship, delta);
+        _recordMemory(actorTokenId, peerTokenId, MEMORY_MET);
         _evaluateRelationshipMilestones(actorTokenId, peerTokenId, false);
 
         preferredPeer[actorTokenId] = peerTokenId;
@@ -494,6 +508,12 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         SocialRules.Deltas memory delta = _socialOutcome(actorTokenId, targetTokenId, action);
         _applyRelationshipDelta(relationship, delta);
 
+        if (action == uint8(SocialAction.HELP)) {
+            _recordMemory(actorTokenId, targetTokenId, MEMORY_HELPED);
+        } else if (action == uint8(SocialAction.MOCK)) {
+            _recordMemory(actorTokenId, targetTokenId, MEMORY_MOCKED);
+        }
+
         if (hostile) {
             uint32 count = hostileSocialCount[actorTokenId];
             if (count != type(uint32).max) hostileSocialCount[actorTokenId] = count + 1;
@@ -662,6 +682,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
                 current,
                 RELATIONSHIP_FRIEND
             );
+            _recordMemory(actorTokenId, targetTokenId, MEMORY_FRIENDSHIP_THRESHOLD);
         }
 
         if (
@@ -675,6 +696,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
                 current,
                 RELATIONSHIP_RIVAL
             );
+            _recordMemory(actorTokenId, targetTokenId, MEMORY_RIVALRY_THRESHOLD);
             _addScars(actorTokenId, SCAR_FIRST_RIVALRY);
         }
 
@@ -688,6 +710,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
                 current,
                 RELATIONSHIP_BETRAYED
             );
+            _recordMemory(actorTokenId, targetTokenId, MEMORY_BETRAYED);
         }
     }
 
@@ -700,6 +723,15 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         next = current | milestoneBit;
         relationshipMilestoneMask[actorTokenId][targetTokenId] = next;
         emit RelationshipMilestone(actorTokenId, targetTokenId, milestoneBit, next);
+    }
+
+    function _recordMemory(uint256 actorTokenId, uint256 targetTokenId, uint8 kind) private {
+        emit MemoryRecorded(
+            actorTokenId,
+            targetTokenId,
+            kind,
+            _relationships[actorTokenId][targetTokenId].interactionCount
+        );
     }
 
     function _applyRelationshipDelta(Relationship storage relationship, SocialRules.Deltas memory delta) private {
