@@ -37,9 +37,10 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
     uint16 public constant MAX_PERSONALITY_DELTA = 1_000;
     uint16 public constant MAX_NEED_DELTA = 2_000;
     uint16 public constant MAX_CATEGORY_COUNTER = 1_000;
+    uint16 public constant MAX_MUTATION_COUNTER = 1_000;
 
     bytes32 private constant ACTIVITY_TYPEHASH = keccak256(
-        "ActivityAttestation(address wallet,uint256 tokenId,uint256 chainId,uint64 fromBlock,uint64 toBlock,bytes32 epochId,bytes32 activityDigest,uint64 xpDelta,int16[8] personalityDeltas,int16[5] needDeltas,uint16[10] categoryCounters,uint256 nonce,uint256 deadline)"
+        "ActivityAttestation(address wallet,uint256 tokenId,uint256 chainId,uint64 fromBlock,uint64 toBlock,bytes32 epochId,bytes32 activityDigest,uint64 xpDelta,int16[8] personalityDeltas,int16[5] needDeltas,uint16[10] categoryCounters,uint16[4] mutationCounters,uint256 nonce,uint256 deadline)"
     );
     bytes32 private constant PEER_TYPEHASH = keccak256(
         "PeerAttestation(address actorWallet,uint256 actorTokenId,address peerWallet,uint256 peerTokenId,uint256 chainId,uint64 blockNumber,bytes32 encounterDigest,uint256 nonce,uint256 deadline)"
@@ -207,6 +208,7 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
                 keccak256(abi.encode(attestation.personalityDeltas)),
                 keccak256(abi.encode(attestation.needDeltas)),
                 keccak256(abi.encode(attestation.categoryCounters)),
+                keccak256(abi.encode(attestation.mutationCounters)),
                 attestation.nonce,
                 attestation.deadline
             )
@@ -249,6 +251,9 @@ contract ActivityOracle is EIP712, AccessControl, Pausable {
         }
         for (uint256 i = 0; i < attestation.categoryCounters.length; ++i) {
             if (attestation.categoryCounters[i] > MAX_CATEGORY_COUNTER) return false;
+        }
+        for (uint256 i = 0; i < attestation.mutationCounters.length; ++i) {
+            if (attestation.mutationCounters[i] > MAX_MUTATION_COUNTER) return false;
         }
 
         return true;
