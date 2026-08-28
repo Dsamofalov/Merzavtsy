@@ -97,6 +97,9 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint16 boredom;
         uint16 stress;
         uint16 socialNeed;
+    }
+
+    struct ExtendedNeeds {
         uint16 arousal;
         uint16 stabilityState;
     }
@@ -116,6 +119,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     address public oracle;
 
     mapping(uint256 tokenId => CreatureState state) private _states;
+    mapping(uint256 tokenId => ExtendedNeeds needs) private _extendedNeeds;
     mapping(uint256 tokenId => bytes32 seed) public genomeSeedOf;
     mapping(uint256 tokenId => uint40 bornAt) public bornAt;
     mapping(uint256 tokenId => uint32[10] counters) private _activityCounters;
@@ -131,12 +135,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
 
     event CreatureInitialized(uint256 indexed tokenId, address indexed owner, bytes32 indexed genomeSeed);
     event OracleConfigured(address indexed oracle);
-    event ActivityApplied(
-        uint256 indexed tokenId,
-        bytes32 indexed activityDigest,
-        uint64 xpDelta,
-        uint16 level
-    );
+    event ActivityApplied(uint256 indexed tokenId, bytes32 indexed activityDigest, uint64 xpDelta, uint16 level);
     event VerifiedPeerContact(
         uint256 indexed actorTokenId,
         uint256 indexed peerTokenId,
@@ -200,8 +199,10 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         state.boredom = 2_500;
         state.stress = 1_000;
         state.socialNeed = 5_000;
-        state.arousal = 2_500;
-        state.stabilityState = MerzavetsMath.clampStat(
+
+        ExtendedNeeds storage extended = _extendedNeeds[tokenId];
+        extended.arousal = 2_500;
+        extended.stabilityState = MerzavetsMath.clampStat(
             5_000 + (int256(uint256(state.stability)) - int256(uint256(state.chaos))) / 4
         );
 
@@ -213,7 +214,6 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
 
     function applyVerifiedActivity(ActivityAttestation calldata attestation) external override {
         if (msg.sender != oracle) revert OnlyOracle();
-
         CreatureState storage state = _states[attestation.tokenId];
         if (state.level == 0) revert CreatureNotInitialized();
 
@@ -222,101 +222,25 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
             || _hasMutationActivity(attestation.mutationCounters);
 
         _grantXp(attestation.tokenId, attestation.xpDelta, 0);
-
-        state.aggression = MerzavetsMath.clampStat(
-            int256(uint256(state.aggression)) + int256(attestation.personalityDeltas[0])
-        );
-        state.curiosity = MerzavetsMath.clampStat(
-            int256(uint256(state.curiosity)) + int256(attestation.personalityDeltas[1])
-        );
-        state.sociability = MerzavetsMath.clampStat(
-            int256(uint256(state.sociability)) + int256(attestation.personalityDeltas[2])
-        );
-        state.greed = MerzavetsMath.clampStat(
-            int256(uint256(state.greed)) + int256(attestation.personalityDeltas[3])
-        );
-        state.stability = MerzavetsMath.clampStat(
-            int256(uint256(state.stability)) + int256(attestation.personalityDeltas[4])
-        );
-        state.chaos = MerzavetsMath.clampStat(
-            int256(uint256(state.chaos)) + int256(attestation.personalityDeltas[5])
-        );
-        state.adaptability = MerzavetsMath.clampStat(
-            int256(uint256(state.adaptability)) + int256(attestation.personalityDeltas[6])
-        );
-        state.memoryBias = MerzavetsMath.clampStat(
-            int256(uint256(state.memoryBias)) + int256(attestation.personalityDeltas[7])
-        );
-
-        state.energy = MerzavetsMath.clampStat(
-            int256(uint256(state.energy)) + int256(attestation.needDeltas[0])
-        );
-        state.mood = MerzavetsMath.clampStat(
-            int256(uint256(state.mood)) + int256(attestation.needDeltas[1])
-        );
-        state.boredom = MerzavetsMath.clampStat(
-            int256(uint256(state.boredom)) + int256(attestation.needDeltas[2])
-        );
-        state.stress = MerzavetsMath.clampStat(
-            int256(uint256(state.stress)) + int256(attestation.needDeltas[3])
-        );
-        state.socialNeed = MerzavetsMath.clampStat(
-            int256(uint256(state.socialNeed)) + int256(attestation.needDeltas[4])
-        );
-
-        uint256 activityPulse;
-        for (uint256 i = 0; i < attestation.categoryCounters.length; ++i) {
-            uint256 amount = uint256(attestation.categoryCounters[i]);
-            activityPulse += amount;
-            uint256 nextCounter = uint256(_activityCounters[attestation.tokenId][i]) + amount;
-            _activityCounters[attestation.tokenId][i] = nextCounter > type(uint32).max
-                ? type(uint32).max
-                : uint32(nextCounter);
-        }
-        for (uint256 i = 0; i < attestation.mutationCounters.length; ++i) {
-            uint256 nextCounter = uint256(_mutationCounters[attestation.tokenId][i])
-                + uint256(attestation.mutationCounters[i]);
-            _mutationCounters[attestation.tokenId][i] = nextCounter > type(uint32).max
-                ? type(uint32).max
-                : uint32(nextCounter);
-        }
-
-        int256 pulseDelta = int256(activityPulse > 500 ? 1_000 : activityPulse * 2);
-        state.arousal = MerzavetsMath.clampStat(int256(uint256(state.arousal)) + pulseDelta - 25);
-        state.stabilityState = MerzavetsMath.clampStat(
-            int256(uint256(state.stabilityState))
-                - int256(attestation.needDeltas[3]) / 2
-                + int256(uint256(state.adaptability)) / 100
-                - int256(uint256(state.chaos)) / 200
-        );
+        _applyPersonalityDeltas(state, attestation.personalityDeltas);
+        _applyNeedDeltas(state, attestation.needDeltas);
+        uint256 activityPulse = _accumulateActivity(attestation.tokenId, attestation.categoryCounters);
+        _accumulateMutationCounters(attestation.tokenId, attestation.mutationCounters);
+        _applyActivityPulse(attestation.tokenId, state, activityPulse, attestation.needDeltas[3]);
 
         if (meaningful) {
             state.lastActivityAt = uint40(block.timestamp);
             _incrementMeaningfulEvent(attestation.tokenId);
-
-            if (state.hibernating) {
-                state.hibernating = false;
-                uint32 wakes = awakeningCount[attestation.tokenId];
-                if (wakes != type(uint32).max) awakeningCount[attestation.tokenId] = wakes + 1;
-                _grantXp(attestation.tokenId, XP_AWAKENING, 1);
-                emit Awakened(attestation.tokenId, awakeningCount[attestation.tokenId]);
-            }
+            if (state.hibernating) _awaken(attestation.tokenId, state);
         }
 
         _evaluateBiography(attestation.tokenId, inactivity);
         state.level = MerzavetsMath.levelForXp(state.xp);
         _advanceStage(attestation.tokenId, state);
 
-        emit ActivityApplied(
-            attestation.tokenId,
-            attestation.activityDigest,
-            attestation.xpDelta,
-            state.level
-        );
+        emit ActivityApplied(attestation.tokenId, attestation.activityDigest, attestation.xpDelta, state.level);
     }
 
-    /// @notice Applies a weak directed relationship change proven by the oracle
-    /// from an ordinary transaction between two registered wallets.
     function applyVerifiedPeerContact(
         uint256 actorTokenId,
         uint256 peerTokenId,
@@ -334,7 +258,8 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         preferredPeer[actorTokenId] = peerTokenId;
         actor.socialNeed = MerzavetsMath.clampStat(int256(uint256(actor.socialNeed)) - 100);
         actor.boredom = MerzavetsMath.clampStat(int256(uint256(actor.boredom)) - 40);
-        actor.arousal = MerzavetsMath.clampStat(int256(uint256(actor.arousal)) + 60);
+        ExtendedNeeds storage extended = _extendedNeeds[actorTokenId];
+        extended.arousal = MerzavetsMath.clampStat(int256(uint256(extended.arousal)) + 60);
         _incrementMeaningfulEvent(actorTokenId);
 
         emit VerifiedPeerContact(
@@ -346,15 +271,12 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         );
     }
 
-    /// @notice Performs a player-triggered structured social action.
     function socialize(uint256 actorTokenId, uint256 targetTokenId, uint8 action) external {
         CreatureState storage actor = _states[actorTokenId];
         if (actor.level == 0 || _states[targetTokenId].level == 0) revert CreatureNotInitialized();
         if (actorTokenId == targetTokenId) revert InvalidPeer();
         if (action > uint8(SocialAction.THREATEN)) revert InvalidSocialAction();
-        if (IMerzavetsIdentityOwner(identity).ownerOf(actorTokenId) != msg.sender) {
-            revert NotCreatureOwner();
-        }
+        if (IMerzavetsIdentityOwner(identity).ownerOf(actorTokenId) != msg.sender) revert NotCreatureOwner();
 
         Relationship storage relationship = _relationships[actorTokenId][targetTokenId];
         if (
@@ -366,17 +288,15 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         preferredPeer[actorTokenId] = targetTokenId;
         actor.socialNeed = MerzavetsMath.clampStat(int256(uint256(actor.socialNeed)) - 250);
         actor.boredom = MerzavetsMath.clampStat(int256(uint256(actor.boredom)) - 100);
-        actor.arousal = MerzavetsMath.clampStat(int256(uint256(actor.arousal)) + 100);
+        ExtendedNeeds storage extended = _extendedNeeds[actorTokenId];
+        extended.arousal = MerzavetsMath.clampStat(int256(uint256(extended.arousal)) + 100);
         _incrementMeaningfulEvent(actorTokenId);
     }
 
-    /// @notice Advances autonomous deterministic life. Callers receive no reward.
     function lifeTick(uint256 tokenId) external {
         CreatureState storage state = _states[tokenId];
         if (state.level == 0) revert CreatureNotInitialized();
-        if (block.timestamp < uint256(state.lastLifeTickAt) + LIFE_TICK_COOLDOWN) {
-            revert LifeTickCooldown();
-        }
+        if (block.timestamp < uint256(state.lastLifeTickAt) + LIFE_TICK_COOLDOWN) revert LifeTickCooldown();
 
         uint8 intent = _selectLifeIntent(tokenId, state);
         _applyLifeIntent(tokenId, state, intent);
@@ -390,7 +310,6 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         emit LifeAction(tokenId, intent, lifeActionCount[tokenId]);
     }
 
-    /// @notice Applies time-derived lifecycle changes without rewarding the caller.
     function syncLifecycle(uint256 tokenId) external {
         CreatureState storage state = _states[tokenId];
         if (state.level == 0) revert CreatureNotInitialized();
@@ -410,6 +329,11 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         CreatureState memory state = _states[tokenId];
         if (state.level == 0) revert CreatureNotInitialized();
         return state;
+    }
+
+    function extendedNeedsOf(uint256 tokenId) external view returns (ExtendedNeeds memory) {
+        if (_states[tokenId].level == 0) revert CreatureNotInitialized();
+        return _extendedNeeds[tokenId];
     }
 
     function relationshipOf(uint256 actorTokenId, uint256 targetTokenId)
@@ -457,16 +381,70 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         return level >= 1;
     }
 
+    function _applyPersonalityDeltas(CreatureState storage state, int16[8] calldata deltas) private {
+        state.aggression = MerzavetsMath.clampStat(int256(uint256(state.aggression)) + int256(deltas[0]));
+        state.curiosity = MerzavetsMath.clampStat(int256(uint256(state.curiosity)) + int256(deltas[1]));
+        state.sociability = MerzavetsMath.clampStat(int256(uint256(state.sociability)) + int256(deltas[2]));
+        state.greed = MerzavetsMath.clampStat(int256(uint256(state.greed)) + int256(deltas[3]));
+        state.stability = MerzavetsMath.clampStat(int256(uint256(state.stability)) + int256(deltas[4]));
+        state.chaos = MerzavetsMath.clampStat(int256(uint256(state.chaos)) + int256(deltas[5]));
+        state.adaptability = MerzavetsMath.clampStat(int256(uint256(state.adaptability)) + int256(deltas[6]));
+        state.memoryBias = MerzavetsMath.clampStat(int256(uint256(state.memoryBias)) + int256(deltas[7]));
+    }
+
+    function _applyNeedDeltas(CreatureState storage state, int16[5] calldata deltas) private {
+        state.energy = MerzavetsMath.clampStat(int256(uint256(state.energy)) + int256(deltas[0]));
+        state.mood = MerzavetsMath.clampStat(int256(uint256(state.mood)) + int256(deltas[1]));
+        state.boredom = MerzavetsMath.clampStat(int256(uint256(state.boredom)) + int256(deltas[2]));
+        state.stress = MerzavetsMath.clampStat(int256(uint256(state.stress)) + int256(deltas[3]));
+        state.socialNeed = MerzavetsMath.clampStat(int256(uint256(state.socialNeed)) + int256(deltas[4]));
+    }
+
+    function _accumulateActivity(uint256 tokenId, uint16[10] calldata counters) private returns (uint256 pulse) {
+        for (uint256 i = 0; i < counters.length; ++i) {
+            uint256 amount = uint256(counters[i]);
+            pulse += amount;
+            uint256 nextCounter = uint256(_activityCounters[tokenId][i]) + amount;
+            _activityCounters[tokenId][i] = nextCounter > type(uint32).max ? type(uint32).max : uint32(nextCounter);
+        }
+    }
+
+    function _accumulateMutationCounters(uint256 tokenId, uint16[4] calldata counters) private {
+        for (uint256 i = 0; i < counters.length; ++i) {
+            uint256 nextCounter = uint256(_mutationCounters[tokenId][i]) + uint256(counters[i]);
+            _mutationCounters[tokenId][i] = nextCounter > type(uint32).max ? type(uint32).max : uint32(nextCounter);
+        }
+    }
+
+    function _applyActivityPulse(
+        uint256 tokenId,
+        CreatureState storage state,
+        uint256 pulse,
+        int16 stressDelta
+    ) private {
+        ExtendedNeeds storage extended = _extendedNeeds[tokenId];
+        int256 pulseDelta = int256(pulse > 500 ? 1_000 : pulse * 2);
+        extended.arousal = MerzavetsMath.clampStat(int256(uint256(extended.arousal)) + pulseDelta - 25);
+        extended.stabilityState = MerzavetsMath.clampStat(
+            int256(uint256(extended.stabilityState))
+                - int256(stressDelta) / 2
+                + int256(uint256(state.adaptability)) / 100
+                - int256(uint256(state.chaos)) / 200
+        );
+    }
+
+    function _awaken(uint256 tokenId, CreatureState storage state) private {
+        state.hibernating = false;
+        uint32 wakes = awakeningCount[tokenId];
+        if (wakes != type(uint32).max) awakeningCount[tokenId] = wakes + 1;
+        _grantXp(tokenId, XP_AWAKENING, 1);
+        emit Awakened(tokenId, awakeningCount[tokenId]);
+    }
+
     function _applySocialAction(uint256 actorTokenId, uint256 targetTokenId, uint8 action) private {
         CreatureState storage actor = _states[actorTokenId];
         Relationship storage relationship = _relationships[actorTokenId][targetTokenId];
-        SocialRules.Deltas memory delta = SocialRules.forAction(
-            action,
-            actor.aggression,
-            actor.sociability,
-            actor.chaos
-        );
-
+        SocialRules.Deltas memory delta = SocialRules.forAction(action, actor.aggression, actor.sociability, actor.chaos);
         _applyRelationshipDelta(relationship, delta);
 
         emit SocialActionTaken(
@@ -479,55 +457,32 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         );
     }
 
-    function _applyRelationshipDelta(
-        Relationship storage relationship,
-        SocialRules.Deltas memory delta
-    ) private {
-        relationship.affinity = MerzavetsMath.clampSigned(
-            int256(relationship.affinity) + int256(delta.affinity),
-            -10_000,
-            10_000
-        );
-        relationship.trust = MerzavetsMath.clampSigned(
-            int256(relationship.trust) + int256(delta.trust),
-            -10_000,
-            10_000
-        );
-        relationship.fear = MerzavetsMath.clampStat(
-            int256(uint256(relationship.fear)) + int256(delta.fear)
-        );
-        relationship.respect = MerzavetsMath.clampStat(
-            int256(uint256(relationship.respect)) + int256(delta.respect)
-        );
-        relationship.envy = MerzavetsMath.clampStat(
-            int256(uint256(relationship.envy)) + int256(delta.envy)
-        );
-        relationship.rivalry = MerzavetsMath.clampStat(
-            int256(uint256(relationship.rivalry)) + int256(delta.rivalry)
-        );
-
+    function _applyRelationshipDelta(Relationship storage relationship, SocialRules.Deltas memory delta) private {
+        relationship.affinity = MerzavetsMath.clampSigned(int256(relationship.affinity) + int256(delta.affinity), -10_000, 10_000);
+        relationship.trust = MerzavetsMath.clampSigned(int256(relationship.trust) + int256(delta.trust), -10_000, 10_000);
+        relationship.fear = MerzavetsMath.clampStat(int256(uint256(relationship.fear)) + int256(delta.fear));
+        relationship.respect = MerzavetsMath.clampStat(int256(uint256(relationship.respect)) + int256(delta.respect));
+        relationship.envy = MerzavetsMath.clampStat(int256(uint256(relationship.envy)) + int256(delta.envy));
+        relationship.rivalry = MerzavetsMath.clampStat(int256(uint256(relationship.rivalry)) + int256(delta.rivalry));
         if (relationship.interactionCount != type(uint32).max) relationship.interactionCount += 1;
         relationship.lastInteractionAt = uint40(block.timestamp);
     }
 
     function _selectLifeIntent(uint256 tokenId, CreatureState storage state) private view returns (uint8) {
+        ExtendedNeeds storage extended = _extendedNeeds[tokenId];
+        bytes32 personalityHash = keccak256(
+            abi.encode(state.level, state.stage, state.aggression, state.curiosity, state.sociability, state.chaos)
+        );
+        bytes32 needsHash = keccak256(
+            abi.encode(state.energy, state.boredom, state.stress, state.socialNeed, extended.arousal, extended.stabilityState)
+        );
         bytes32 seed = keccak256(
             abi.encode(
                 genomeSeedOf[tokenId],
                 tokenId,
                 block.timestamp / LIFE_TICK_COOLDOWN,
-                state.level,
-                state.stage,
-                state.aggression,
-                state.curiosity,
-                state.sociability,
-                state.chaos,
-                state.energy,
-                state.boredom,
-                state.stress,
-                state.socialNeed,
-                state.arousal,
-                state.stabilityState,
+                personalityHash,
+                needsHash,
                 preferredPeer[tokenId],
                 lifeActionCount[tokenId]
             )
@@ -535,14 +490,14 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
 
         if (state.hibernating) return uint8(uint256(seed) % 2 == 0 ? LifeIntent.REST : LifeIntent.HIDE);
         if (state.energy < 2_500) return uint8(LifeIntent.REST);
-        if (state.stress > 7_000 || state.stabilityState < 2_500) return uint8(LifeIntent.HIDE);
-        if (state.boredom > 7_000 || state.arousal > 8_000) return uint8(LifeIntent.WANDER);
+        if (state.stress > 7_000 || extended.stabilityState < 2_500) return uint8(LifeIntent.HIDE);
+        if (state.boredom > 7_000 || extended.arousal > 8_000) return uint8(LifeIntent.WANDER);
         if (
             state.socialNeed > 7_000 && preferredPeer[tokenId] != 0
                 && intentUnlocked(state.level, uint8(LifeIntent.SEEK_COMPANY))
         ) return uint8(LifeIntent.SEEK_COMPANY);
         if (
-            preferredPeer[tokenId] != 0 && state.aggression > 7_500 && state.arousal > 6_000
+            preferredPeer[tokenId] != 0 && state.aggression > 7_500 && extended.arousal > 6_000
                 && intentUnlocked(state.level, uint8(LifeIntent.MOCK_RIVAL))
         ) return uint8(LifeIntent.MOCK_RIVAL);
 
@@ -553,34 +508,34 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
 
     function _applyLifeIntent(uint256 tokenId, CreatureState storage state, uint8 intent) private {
         if (intent == uint8(LifeIntent.REST)) {
-            _adjustNeeds(state, 700, 0, 100, -300, 50, -350, 300);
+            _adjustNeeds(tokenId, state, 700, 0, 100, -300, 50, -350, 300);
             return;
         }
         if (intent == uint8(LifeIntent.WANDER)) {
-            _adjustNeeds(state, -300, 100, -500, 50, 100, 250, -50);
+            _adjustNeeds(tokenId, state, -300, 100, -500, 50, 100, 250, -50);
             return;
         }
         if (intent == uint8(LifeIntent.SEEK_COMPANY)) {
-            _adjustNeeds(state, -200, 150, -200, -50, -700, 100, 100);
+            _adjustNeeds(tokenId, state, -200, 150, -200, -50, -700, 100, 100);
             uint256 peer = preferredPeer[tokenId];
             if (peer != 0 && _states[peer].level != 0) _applySocialAction(tokenId, peer, uint8(SocialAction.GREET));
             return;
         }
         if (intent == uint8(LifeIntent.MOCK_RIVAL)) {
-            _adjustNeeds(state, -150, 100, -150, 100, -200, 350, -200);
+            _adjustNeeds(tokenId, state, -150, 100, -150, 100, -200, 350, -200);
             uint256 peer = preferredPeer[tokenId];
             if (peer != 0 && _states[peer].level != 0) _applySocialAction(tokenId, peer, uint8(SocialAction.MOCK));
             return;
         }
         if (intent == uint8(LifeIntent.GROOM)) {
-            _adjustNeeds(state, -100, 200, -100, -200, 50, -100, 250);
+            _adjustNeeds(tokenId, state, -100, 200, -100, -200, 50, -100, 250);
             return;
         }
-
-        _adjustNeeds(state, 200, -50, 50, -500, 150, -250, 350);
+        _adjustNeeds(tokenId, state, 200, -50, 50, -500, 150, -250, 350);
     }
 
     function _adjustNeeds(
+        uint256 tokenId,
         CreatureState storage state,
         int256 energyDelta,
         int256 moodDelta,
@@ -595,33 +550,31 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         state.boredom = MerzavetsMath.clampStat(int256(uint256(state.boredom)) + boredomDelta);
         state.stress = MerzavetsMath.clampStat(int256(uint256(state.stress)) + stressDelta);
         state.socialNeed = MerzavetsMath.clampStat(int256(uint256(state.socialNeed)) + socialDelta);
-        state.arousal = MerzavetsMath.clampStat(int256(uint256(state.arousal)) + arousalDelta);
-        state.stabilityState = MerzavetsMath.clampStat(int256(uint256(state.stabilityState)) + stabilityDelta);
+        ExtendedNeeds storage extended = _extendedNeeds[tokenId];
+        extended.arousal = MerzavetsMath.clampStat(int256(uint256(extended.arousal)) + arousalDelta);
+        extended.stabilityState = MerzavetsMath.clampStat(int256(uint256(extended.stabilityState)) + stabilityDelta);
     }
 
     function _evaluateBiography(uint256 tokenId, uint256 inactivity) private {
         uint32[10] memory counters = _activityCounters[tokenId];
         uint32[4] memory extraCounters = _mutationCounters[tokenId];
         CreatureState storage state = _states[tokenId];
-        uint256 age = block.timestamp - uint256(bornAt[tokenId]);
         uint256 previousMutations = mutationMask[tokenId];
         uint256 nextMutations = MutationRules.evaluate(
             previousMutations,
             counters,
             extraCounters,
             inactivity,
-            age,
+            block.timestamp - uint256(bornAt[tokenId]),
             state.level
         );
 
         if (nextMutations != previousMutations) {
             uint256 newBits = nextMutations & ~previousMutations;
             mutationMask[tokenId] = nextMutations;
-            uint256 newCount = _popcount(newBits);
-            uint256 bonus = newCount * uint256(XP_MUTATION);
+            uint256 bonus = _popcount(newBits) * uint256(XP_MUTATION);
             _grantXp(tokenId, bonus > type(uint64).max ? type(uint64).max : uint64(bonus), 2);
             emit MutationsUnlocked(tokenId, newBits, nextMutations);
-
             if (previousMutations == 0) _addScars(tokenId, SCAR_FIRST_MUTATION);
         }
 
@@ -635,21 +588,17 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint256 previous = scarMask[tokenId];
         uint256 next = previous | bits;
         if (next == previous) return;
-
-        uint256 newBits = next & ~previous;
         scarMask[tokenId] = next;
-        emit Scarred(tokenId, newBits, next);
+        emit Scarred(tokenId, next & ~previous, next);
     }
 
     function _advanceStage(uint256 tokenId, CreatureState storage state) private {
         uint256 age = block.timestamp - uint256(bornAt[tokenId]);
         uint256 diversity = _activityDiversity(tokenId);
         uint256 events = meaningfulEventCount[tokenId];
-
         while (state.stage < uint8(Stage.ARKHIMERZAVETS)) {
             uint8 next = state.stage + 1;
             if (!_meetsStageRequirements(next, age, state.xp, events, diversity)) break;
-
             uint8 previous = state.stage;
             state.stage = next;
             emit StageAdvanced(tokenId, previous, next);
