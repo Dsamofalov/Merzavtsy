@@ -1,4 +1,5 @@
 import { encodePacked, keccak256, type Address, type Hex } from "viem";
+import { activityHistoryMetrics, recordActivityObservation, type ActivityObservation } from "./activity-history.js";
 import { aggregateEpoch } from "./aggregator.js";
 import { finalizedRange, dedupeBlockObservations, type BlockRange } from "./chain-watcher.js";
 import { classifyTransaction } from "./classifier.js";
@@ -29,6 +30,7 @@ export interface RuntimeDependencies {
   finalityDepth: bigint;
   epochBlocks: bigint;
   highGasThreshold: bigint;
+  minimumMeaningfulWei?: bigint;
   getHeadBlock(): Promise<bigint>;
   getBornEvents(fromBlock: bigint, toBlock: bigint): Promise<readonly BornEvent[]>;
   getIndexedEvents(fromBlock: bigint, toBlock: bigint): Promise<readonly IndexedEvent[]>;
@@ -56,7 +58,11 @@ function lower(address: Address): string {
 }
 
 function selectorOf(input: Hex): Hex | null {
-  return input.length >= 10 ? input.slice(0, 10).toLowerCase() as Hex : null;
+  return input.length >= 10 ? txSelector(input) : null;
+}
+
+function txSelector(input: Hex): Hex {
+  return input.slice(0, 10).toLowerCase() as Hex;
 }
 
 function peerDigest(
@@ -84,6 +90,7 @@ export class RuntimePhases {
   #activities = new Map<string, ClassifiedActivity[]>();
   #seenUpdates: SeenUpdate[] = [];
   #peerEncounters: PeerObservation[] = [];
+  #activityObservations: ActivityObservation[] = [];
 
   constructor(dependencies: RuntimeDependencies) {
     if (dependencies.chainId <= 0n) throw new Error("chainId must be positive");
@@ -91,6 +98,7 @@ export class RuntimePhases {
     if (dependencies.finalityDepth < 0n) throw new Error("finalityDepth must be non-negative");
     if (dependencies.epochBlocks <= 0n) throw new Error("epochBlocks must be positive");
     if (dependencies.highGasThreshold < 0n) throw new Error("highGasThreshold must be non-negative");
+    if ((dependencies.minimumMeaningfulWei ?? 0n) < 0n) throw new Error("minimumMeaningfulWei must be non-negative");
     this.#dependencies = dependencies;
     this.#logger = dependencies.logger ?? noopLogger;
   }
@@ -246,6 +254,14 @@ export class RuntimePhases {
           );
           peers.delete(lower(wallet));
 
+          this.#activityObservations.push({
+            wallet,
+            txHash: tx.txHash,
+            blockNumber: tx.blockNumber,
+            timestamp: block.timestamp,
+            contract: lower(tx.from) === lower(wallet) && hasCode && tx.to !== null ? tx.to : null,
+          });
+
           const classified = classifyTransaction(tx, {
             wallet,
             tokenId: creature.tokenId,
@@ -255,6 +271,7 @@ export class RuntimePhases {
             seenCounterparties: walletState.counterparties,
             seenSelectors: walletState.selectors,
             highGasThreshold: this.#dependencies.highGasThreshold,
+            minimumMeaningfulWei: this.#dependencies.minimumMeaningfulWei ?? 0n,
             destinationHasCode: hasCode,
           });
           if (classified.length !== 0) {
@@ -288,9 +305,11 @@ export class RuntimePhases {
 
     const range = this.#range;
     const creatures = this.#dependencies.store.registeredCreatures();
+    const historyClock = this.#blocks.at(-1)?.timestamp ?? 0n;
     const summaries = creatures.flatMap((creature) => {
       const activities = this.#activities.get(lower(creature.wallet)) ?? [];
       if (activities.length === 0) return [];
+      const history = activityHistoryMetrics(this.#dependencies.store, creature.wallet, historyClock);
       return [aggregateEpoch(
         creature.wallet,
         creature.tokenId,
@@ -298,6 +317,7 @@ export class RuntimePhases {
         range.fromBlock,
         range.toBlock,
         activities,
+        history,
       )];
     });
 
@@ -305,6 +325,9 @@ export class RuntimePhases {
       for (const summary of summaries) this.#dependencies.store.putEpoch(summary);
       for (const encounter of this.#peerEncounters) {
         this.#dependencies.store.putPeerEncounter(encounter);
+      }
+      for (const observation of this.#activityObservations) {
+        recordActivityObservation(this.#dependencies.store, observation);
       }
       for (const update of this.#seenUpdates) {
         if (update.kind === "counterparty") {
@@ -453,5 +476,6 @@ export class RuntimePhases {
     this.#activities.clear();
     this.#seenUpdates = [];
     this.#peerEncounters = [];
+    this.#activityObservations = [];
   }
 }
