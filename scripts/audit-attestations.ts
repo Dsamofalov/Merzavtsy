@@ -1,5 +1,10 @@
 import type { Address } from "viem";
-import { activityMerkleRoot, auditActivityFeed, buildOpenActivityFeed } from "../daemon/src/activity-feed.js";
+import {
+  activityMerkleRoot,
+  auditActivityFeed,
+  buildOpenActivityFeed,
+  parseAuditSignerAllowlist,
+} from "../daemon/src/activity-feed.js";
 import { signedActivityArchive } from "../daemon/src/signed-archive.js";
 import { DaemonStore } from "../daemon/src/store.js";
 
@@ -13,10 +18,7 @@ function addressEnv(name: string): Address {
 
 const dbPath = process.env.DB_PATH?.trim() || "daemon/data/merzavtsy.sqlite";
 const oracleAddress = addressEnv("ORACLE_ADDRESS");
-const configuredSigner = process.env.ORACLE_SIGNER_ADDRESS?.trim();
-const allowedSigners = configuredSigner && /^0x[0-9a-fA-F]{40}$/.test(configuredSigner)
-  ? [configuredSigner as Address]
-  : [];
+const allowedSigners = parseAuditSignerAllowlist(process.env);
 
 const store = new DaemonStore(dbPath);
 try {
@@ -27,6 +29,7 @@ try {
     entries: feed.length,
     validEntries: feed.filter((entry) => entry.valid).length,
     merkleRoot: activityMerkleRoot(feed),
+    authorizedSigners: allowedSigners,
     findings,
     feed: feed.map((entry) => ({
       wallet: entry.attestation.wallet,
