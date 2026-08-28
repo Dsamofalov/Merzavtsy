@@ -3,6 +3,7 @@ pragma solidity 0.8.34;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {MerzavetsMath} from "./libraries/MerzavetsMath.sol";
+import {MutationRules} from "./libraries/MutationRules.sol";
 import {IMerzavetsWorld} from "./interfaces/IMerzavetsWorld.sol";
 
 /// @title MerzavetsWorld
@@ -14,6 +15,22 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     error CreatureNotInitialized();
     error OracleAlreadyConfigured();
     error InvalidOracle();
+
+    uint256 public constant HIBERNATION_DELAY = 14 days;
+    uint256 public constant VERY_LONG_SLEEP = 30 days;
+
+    uint256 public constant MUTATION_GAS_GILLS = 1 << 0;
+    uint256 public constant MUTATION_CONTRACT_TEETH = 1 << 1;
+    uint256 public constant MUTATION_CALLDATA_EYE = 1 << 2;
+    uint256 public constant MUTATION_PIMPLED_BRAIN = 1 << 3;
+    uint256 public constant MUTATION_WALLET_MOLD = 1 << 4;
+    uint256 public constant MUTATION_STICKY_FINGERS = 1 << 5;
+    uint256 public constant MUTATION_CROWDED_WHISKERS = 1 << 6;
+    uint256 public constant MUTATION_ROAD_RASH = 1 << 7;
+
+    uint256 public constant SCAR_FIRST_DEPLOYMENT = 1 << 0;
+    uint256 public constant SCAR_LONG_SLEEP = 1 << 1;
+    uint256 public constant SCAR_FIRST_MUTATION = 1 << 2;
 
     enum Stage {
         ZARODYSH,
@@ -55,6 +72,9 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     mapping(uint256 tokenId => uint40 bornAt) public bornAt;
     mapping(uint256 tokenId => uint32[10] counters) private _activityCounters;
     mapping(uint256 tokenId => uint32 count) public meaningfulEventCount;
+    mapping(uint256 tokenId => uint256 mask) public mutationMask;
+    mapping(uint256 tokenId => uint256 mask) public scarMask;
+    mapping(uint256 tokenId => uint32 count) public awakeningCount;
 
     event CreatureInitialized(uint256 indexed tokenId, address indexed owner, bytes32 indexed genomeSeed);
     event OracleConfigured(address indexed oracle);
@@ -64,6 +84,11 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint64 xpDelta,
         uint16 level
     );
+    event Hibernated(uint256 indexed tokenId, uint256 inactivity);
+    event Awakened(uint256 indexed tokenId, uint32 awakeningCount);
+    event MutationsUnlocked(uint256 indexed tokenId, uint256 newBits, uint256 fullMask);
+    event Scarred(uint256 indexed tokenId, uint256 newBits, uint256 fullMask);
+    event StageAdvanced(uint256 indexed tokenId, uint8 previousStage, uint8 newStage);
 
     constructor(address identity_, address initialOwner) Ownable(initialOwner) {
         identity = identity_;
@@ -118,6 +143,9 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         CreatureState storage state = _states[attestation.tokenId];
         if (state.level == 0) revert CreatureNotInitialized();
 
+        uint256 inactivity = block.timestamp - uint256(state.lastActivityAt);
+        bool meaningful = attestation.xpDelta != 0 || _hasActivity(attestation.categoryCounters);
+
         uint256 nextXp = uint256(state.xp) + uint256(attestation.xpDelta);
         state.xp = nextXp > type(uint64).max ? type(uint64).max : uint64(nextXp);
         state.level = MerzavetsMath.levelForXp(state.xp);
@@ -171,13 +199,25 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
                 : uint32(nextCounter);
         }
 
-        state.lastActivityAt = uint40(block.timestamp);
-        if (attestation.xpDelta != 0 || _hasActivity(attestation.categoryCounters)) {
+        if (meaningful) {
+            state.lastActivityAt = uint40(block.timestamp);
             uint32 count = meaningfulEventCount[attestation.tokenId];
             if (count != type(uint32).max) {
                 meaningfulEventCount[attestation.tokenId] = count + 1;
             }
+
+            if (state.hibernating) {
+                state.hibernating = false;
+                uint32 wakes = awakeningCount[attestation.tokenId];
+                if (wakes != type(uint32).max) {
+                    awakeningCount[attestation.tokenId] = wakes + 1;
+                }
+                emit Awakened(attestation.tokenId, awakeningCount[attestation.tokenId]);
+            }
         }
+
+        _evaluateBiography(attestation.tokenId, inactivity);
+        _advanceStage(attestation.tokenId, state);
 
         emit ActivityApplied(
             attestation.tokenId,
@@ -185,6 +225,21 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
             attestation.xpDelta,
             state.level
         );
+    }
+
+    /// @notice Applies time-derived lifecycle changes without rewarding the caller.
+    function syncLifecycle(uint256 tokenId) external {
+        CreatureState storage state = _states[tokenId];
+        if (state.level == 0) revert CreatureNotInitialized();
+
+        uint256 inactivity = block.timestamp - uint256(state.lastActivityAt);
+        if (!state.hibernating && inactivity >= HIBERNATION_DELAY) {
+            state.hibernating = true;
+            emit Hibernated(tokenId, inactivity);
+        }
+
+        _evaluateBiography(tokenId, inactivity);
+        _advanceStage(tokenId, state);
     }
 
     function stateOf(uint256 tokenId) external view returns (CreatureState memory) {
@@ -200,6 +255,80 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
 
     function currentLevel(uint64 xp) external pure returns (uint16) {
         return MerzavetsMath.levelForXp(xp);
+    }
+
+    function _evaluateBiography(uint256 tokenId, uint256 inactivity) private {
+        uint32[10] memory counters = _activityCounters[tokenId];
+        uint256 previousMutations = mutationMask[tokenId];
+        uint256 nextMutations = MutationRules.evaluate(previousMutations, counters, inactivity);
+
+        if (nextMutations != previousMutations) {
+            uint256 newBits = nextMutations & ~previousMutations;
+            mutationMask[tokenId] = nextMutations;
+            emit MutationsUnlocked(tokenId, newBits, nextMutations);
+
+            if (previousMutations == 0) {
+                _addScars(tokenId, SCAR_FIRST_MUTATION);
+            }
+        }
+
+        uint256 scars;
+        if (counters[5] != 0) scars |= SCAR_FIRST_DEPLOYMENT;
+        if (inactivity >= VERY_LONG_SLEEP) scars |= SCAR_LONG_SLEEP;
+        if (scars != 0) _addScars(tokenId, scars);
+    }
+
+    function _addScars(uint256 tokenId, uint256 bits) private {
+        uint256 previous = scarMask[tokenId];
+        uint256 next = previous | bits;
+        if (next == previous) return;
+
+        uint256 newBits = next & ~previous;
+        scarMask[tokenId] = next;
+        emit Scarred(tokenId, newBits, next);
+    }
+
+    function _advanceStage(uint256 tokenId, CreatureState storage state) private {
+        uint256 age = block.timestamp - uint256(bornAt[tokenId]);
+        uint256 diversity = _activityDiversity(tokenId);
+        uint256 events = meaningfulEventCount[tokenId];
+
+        while (state.stage < uint8(Stage.ARKHIMERZAVETS)) {
+            uint8 next = state.stage + 1;
+            if (!_meetsStageRequirements(next, age, state.xp, events, diversity)) break;
+
+            uint8 previous = state.stage;
+            state.stage = next;
+            emit StageAdvanced(tokenId, previous, next);
+        }
+    }
+
+    function _meetsStageRequirements(
+        uint8 stage,
+        uint256 age,
+        uint64 xp,
+        uint256 events,
+        uint256 diversity
+    ) private pure returns (bool) {
+        if (stage == uint8(Stage.PAKOSTNIK)) {
+            return age >= 1 days && xp >= 500 && events >= 1 && diversity >= 2;
+        }
+        if (stage == uint8(Stage.MERZAVETS)) {
+            return age >= 7 days && xp >= 5_000 && events >= 5 && diversity >= 3;
+        }
+        if (stage == uint8(Stage.MATERYI)) {
+            return age >= 30 days && xp >= 25_000 && events >= 20 && diversity >= 5;
+        }
+        if (stage == uint8(Stage.ARKHIMERZAVETS)) {
+            return age >= 90 days && xp >= 100_000 && events >= 50 && diversity >= 7;
+        }
+        return false;
+    }
+
+    function _activityDiversity(uint256 tokenId) private view returns (uint256 count) {
+        for (uint256 i = 0; i < _activityCounters[tokenId].length; ++i) {
+            if (_activityCounters[tokenId][i] != 0) ++count;
+        }
     }
 
     function _axis(bytes32 seed, uint8 index) private pure returns (uint16) {
