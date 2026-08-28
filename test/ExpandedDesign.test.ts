@@ -7,38 +7,32 @@ const { viem, networkHelpers } = await network.create();
 
 const activityTypes = {
   ActivityAttestation: [
-    { name: "wallet", type: "address" },
-    { name: "tokenId", type: "uint256" },
-    { name: "chainId", type: "uint256" },
-    { name: "fromBlock", type: "uint64" },
-    { name: "toBlock", type: "uint64" },
-    { name: "epochId", type: "bytes32" },
-    { name: "activityDigest", type: "bytes32" },
-    { name: "xpDelta", type: "uint64" },
-    { name: "personalityDeltas", type: "int16[8]" },
-    { name: "needDeltas", type: "int16[5]" },
-    { name: "categoryCounters", type: "uint16[10]" },
-    { name: "mutationCounters", type: "uint16[4]" },
-    { name: "nonce", type: "uint256" },
+    { name: "wallet", type: "address" }, { name: "tokenId", type: "uint256" },
+    { name: "chainId", type: "uint256" }, { name: "fromBlock", type: "uint64" },
+    { name: "toBlock", type: "uint64" }, { name: "epochId", type: "bytes32" },
+    { name: "activityDigest", type: "bytes32" }, { name: "xpDelta", type: "uint64" },
+    { name: "personalityDeltas", type: "int16[8]" }, { name: "needDeltas", type: "int16[5]" },
+    { name: "categoryCounters", type: "uint16[10]" }, { name: "nonce", type: "uint256" },
     { name: "deadline", type: "uint256" },
   ],
 } as const;
 
+const mutationTypes = {
+  MutationMetricsAttestation: [
+    { name: "wallet", type: "address" }, { name: "tokenId", type: "uint256" },
+    { name: "chainId", type: "uint256" }, { name: "epochId", type: "bytes32" },
+    { name: "activityDigest", type: "bytes32" }, { name: "mutationCounters", type: "uint16[4]" },
+    { name: "nonce", type: "uint256" }, { name: "deadline", type: "uint256" },
+  ],
+} as const;
+
 type Activity = {
-  wallet: Address;
-  tokenId: bigint;
-  chainId: bigint;
-  fromBlock: bigint;
-  toBlock: bigint;
-  epochId: Hex;
-  activityDigest: Hex;
-  xpDelta: bigint;
-  personalityDeltas: readonly [number, number, number, number, number, number, number, number];
-  needDeltas: readonly [number, number, number, number, number];
-  categoryCounters: readonly [number, number, number, number, number, number, number, number, number, number];
-  mutationCounters: readonly [number, number, number, number];
-  nonce: bigint;
-  deadline: bigint;
+  wallet: Address; tokenId: bigint; chainId: bigint; fromBlock: bigint; toBlock: bigint;
+  epochId: Hex; activityDigest: Hex; xpDelta: bigint;
+  personalityDeltas: readonly [number,number,number,number,number,number,number,number];
+  needDeltas: readonly [number,number,number,number,number];
+  categoryCounters: readonly [number,number,number,number,number,number,number,number,number,number];
+  nonce: bigint; deadline: bigint;
 };
 
 async function fixture() {
@@ -56,20 +50,11 @@ async function fixture() {
   function activity(sequence: number, overrides: Partial<Activity> = {}): Activity {
     const fromBlock = BigInt(sequence * 10 + 1);
     return {
-      wallet: alice.account.address,
-      tokenId: 1n,
-      chainId,
-      fromBlock,
-      toBlock: fromBlock + 9n,
+      wallet: alice.account.address, tokenId: 1n, chainId, fromBlock, toBlock: fromBlock + 9n,
       epochId: keccak256(stringToBytes(`expanded-epoch-${sequence}`)),
-      activityDigest: keccak256(stringToBytes(`expanded-activity-${sequence}`)),
-      xpDelta: 0n,
-      personalityDeltas: [0,0,0,0,0,0,0,0],
-      needDeltas: [0,0,0,0,0],
-      categoryCounters: [0,0,0,0,0,0,0,0,0,0],
-      mutationCounters: [0,0,0,0],
-      nonce: BigInt(sequence),
-      deadline: 4_000_000_000n,
+      activityDigest: keccak256(stringToBytes(`expanded-activity-${sequence}`)), xpDelta: 0n,
+      personalityDeltas: [0,0,0,0,0,0,0,0], needDeltas: [0,0,0,0,0],
+      categoryCounters: [0,0,0,0,0,0,0,0,0,0], nonce: BigInt(sequence), deadline: 4_000_000_000n,
       ...overrides,
     };
   }
@@ -77,7 +62,16 @@ async function fixture() {
     const signature = await signer.signTypedData({ account: signer.account, domain, types: activityTypes, primaryType: "ActivityAttestation", message: value });
     await oracle.write.submit([value, signature], { account: keeper.account });
   }
-  return { admin, signer, alice, keeper, identity, world, oracle, activity, submit };
+  async function submitMutation(value: Activity, mutationCounters: readonly [number,number,number,number]) {
+    const metrics = {
+      wallet: value.wallet, tokenId: value.tokenId, chainId: value.chainId,
+      epochId: value.epochId, activityDigest: value.activityDigest, mutationCounters,
+      nonce: await oracle.read.mutationNonces([value.wallet]), deadline: 4_000_000_000n,
+    } as const;
+    const signature = await signer.signTypedData({ account: signer.account, domain, types: mutationTypes, primaryType: "MutationMetricsAttestation", message: metrics });
+    await oracle.write.submitMutationMetrics([metrics, signature], { account: keeper.account });
+  }
+  return { admin, signer, alice, keeper, identity, world, oracle, activity, submit, submitMutation };
 }
 
 describe("expanded approved design", () => {
@@ -113,10 +107,8 @@ describe("expanded approved design", () => {
     for (const level of [1n,2n,3n,5n,10n,25n,50n]) {
       const memory = await world.read.memoryCapacity([level]);
       const traits = await world.read.visibleTraitSlots([level]);
-      assert.ok(memory >= priorMemory);
-      assert.ok(traits >= priorTraits);
-      priorMemory = memory;
-      priorTraits = traits;
+      assert.ok(memory >= priorMemory); assert.ok(traits >= priorTraits);
+      priorMemory = memory; priorTraits = traits;
     }
   });
 
@@ -128,9 +120,11 @@ describe("expanded approved design", () => {
     assert.equal(await world.read.intentUnlocked([3n, 3]), true);
   });
 
-  it("uses explicit mutation counters plus age/level/dependency gates for advanced mutations", async () => {
-    const { keeper, world, activity, submit } = await networkHelpers.loadFixture(fixture);
-    await submit(activity(0, { xpDelta: 10_000n, categoryCounters: [0,0,30,0,30,0,0,0,0,0], mutationCounters: [10,10,0,10] }));
+  it("uses signed mutation counters plus age/level/dependency gates for advanced mutations", async () => {
+    const { keeper, world, activity, submit, submitMutation } = await networkHelpers.loadFixture(fixture);
+    const first = activity(0, { xpDelta: 10_000n, categoryCounters: [0,0,30,0,30,0,0,0,0,0] });
+    await submit(first);
+    await submitMutation(first, [10,10,0,10]);
     let mask = await world.read.mutationMask([1n]);
     const rusty = await world.read.MUTATION_RUSTY_PAW();
     const networkScar = await world.read.MUTATION_NETWORK_SCAR();
