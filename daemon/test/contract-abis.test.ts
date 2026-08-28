@@ -49,9 +49,16 @@ describe("runtime contract ABIs", () => {
     assert.ok(peerData.startsWith("0x"));
   });
 
-  it("contains the runtime read/write surface and Born event", () => {
+  it("contains the operator/runtime read-write surface and Born event", () => {
+    const birth = encodeFunctionData({ abi: IDENTITY_ABI, functionName: "birth" });
+    const tokenOf = encodeFunctionData({ abi: IDENTITY_ABI, functionName: "tokenOf", args: [wallet] });
     const lifeTick = encodeFunctionData({ abi: WORLD_ABI, functionName: "lifeTick", args: [1n] });
     const stateOf = encodeFunctionData({ abi: WORLD_ABI, functionName: "stateOf", args: [1n] });
+    const relationshipOf = encodeFunctionData({
+      abi: WORLD_ABI,
+      functionName: "relationshipOf",
+      args: [1n, 2n],
+    });
     const identityWorld = encodeFunctionData({ abi: IDENTITY_ABI, functionName: "world" });
     const bornTopics = encodeEventTopics({
       abi: IDENTITY_ABI,
@@ -59,9 +66,9 @@ describe("runtime contract ABIs", () => {
       args: { tokenId: 1n, owner: wallet },
     });
 
-    assert.ok(lifeTick.startsWith("0x"));
-    assert.ok(stateOf.startsWith("0x"));
-    assert.ok(identityWorld.startsWith("0x"));
+    for (const encoded of [birth, tokenOf, lifeTick, stateOf, relationshipOf, identityWorld]) {
+      assert.ok(encoded.startsWith("0x"));
+    }
     assert.ok(bornTopics[0]?.startsWith("0x"));
   });
 });
