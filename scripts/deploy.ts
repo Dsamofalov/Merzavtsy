@@ -203,11 +203,12 @@ export async function createDefaultDeploymentDriver(config: DeploymentCliConfig)
         args,
       } as never);
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success" || receipt.contractAddress === null) {
+      const contractAddress = receipt.contractAddress;
+      if (receipt.status !== "success" || contractAddress == null) {
         throw new Error(`${contract} deployment reverted or returned no contract address`);
       }
-      abiByAddress.set(receipt.contractAddress.toLowerCase(), artifact.abi);
-      return { address: receipt.contractAddress, blockNumber: receipt.blockNumber, txHash: hash };
+      abiByAddress.set(contractAddress.toLowerCase(), artifact.abi);
+      return { address: contractAddress, blockNumber: receipt.blockNumber, txHash: hash };
     },
     async write(address, functionName, args) {
       const abi = abiByAddress.get(address.toLowerCase());
