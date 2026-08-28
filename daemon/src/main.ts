@@ -18,6 +18,7 @@ import {
   parseDeploymentMetadata,
   type DeploymentMetadata,
 } from "./deployment.js";
+import { errorLogFields, JsonLogger, type Logger } from "./logger.js";
 import { ProductionIo } from "./production-io.js";
 import { RpcBlockSource } from "./rpc-source.js";
 import { deploymentPath, openStoreAfterBootstrap } from "./startup.js";
@@ -41,6 +42,7 @@ export interface PrepareProductionDependencies {
   readText(path: string): Promise<string>;
   createNetwork(config: RuntimeConfig): ProductionNetwork;
   openStore(path: string): DaemonStore;
+  logger?: Logger;
 }
 
 export interface PreparedProductionDaemon {
@@ -134,6 +136,7 @@ export async function prepareProductionDaemon(
   env: NodeJS.ProcessEnv = process.env,
   dependencies: PrepareProductionDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<PreparedProductionDaemon> {
+  const logger = dependencies.logger ?? new JsonLogger();
   const config = loadConfig(env);
   const metadata = parseDeploymentMetadata(
     await dependencies.readText(deploymentPath(config.chainId)),
@@ -160,6 +163,7 @@ export async function prepareProductionDaemon(
       store,
       oracleSigner: network.oracleSigner,
       io: network.io,
+      logger,
       getHeadBlock: network.getHeadBlock,
       getBlocks: network.getBlocks,
       destinationHasCode: network.destinationHasCode,
@@ -188,10 +192,8 @@ function isDirectExecution(): boolean {
 }
 
 if (isDirectExecution()) {
-  runProductionDaemon().catch(() => {
-    // Keep process-level failure output free of RPC URLs/private values until
-    // the structured/redacted observability layer is installed.
-    console.error("Merzavtsy daemon terminated with an error");
+  runProductionDaemon().catch((error: unknown) => {
+    new JsonLogger().error("daemon_terminated", errorLogFields(error));
     process.exitCode = 1;
   });
 }
