@@ -1,11 +1,5 @@
 import type { Address, Hex, LocalAccount } from "viem";
-import type {
-  CategoryCounters,
-  EpochSummary,
-  MutationCounters,
-  NeedDeltas,
-  PersonalityDeltas,
-} from "./types.js";
+import type { EpochSummary, NeedDeltas, PersonalityDeltas, CategoryCounters } from "./types.js";
 
 export interface ActivityAttestation {
   wallet: Address;
@@ -19,7 +13,6 @@ export interface ActivityAttestation {
   personalityDeltas: PersonalityDeltas;
   needDeltas: NeedDeltas;
   categoryCounters: CategoryCounters;
-  mutationCounters: MutationCounters;
   nonce: bigint;
   deadline: bigint;
 }
@@ -37,7 +30,6 @@ export const ACTIVITY_TYPES = {
     { name: "personalityDeltas", type: "int16[8]" },
     { name: "needDeltas", type: "int16[5]" },
     { name: "categoryCounters", type: "uint16[10]" },
-    { name: "mutationCounters", type: "uint16[4]" },
     { name: "nonce", type: "uint256" },
     { name: "deadline", type: "uint256" },
   ],
@@ -59,9 +51,6 @@ export function buildAttestation(
 ): ActivityAttestation {
   if (nonce < 0n) throw new Error("nonce must be non-negative");
   if (deadline < 0n) throw new Error("deadline must be non-negative");
-  const mutationCounters: MutationCounters = summary.mutationCounters === undefined
-    ? [0, 0, 0, 0]
-    : [...summary.mutationCounters] as MutationCounters;
 
   return {
     wallet: summary.wallet,
@@ -75,7 +64,6 @@ export function buildAttestation(
     personalityDeltas: [...summary.personalityDeltas] as PersonalityDeltas,
     needDeltas: [...summary.needDeltas] as NeedDeltas,
     categoryCounters: [...summary.categoryCounters] as CategoryCounters,
-    mutationCounters,
     nonce,
     deadline,
   };
