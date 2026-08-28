@@ -12,7 +12,6 @@
   },
   "include": [
     "hardhat.config.ts",
-    "test/**/*.ts",
     "scripts/**/*.ts",
     "daemon/**/*.ts"
   ]
