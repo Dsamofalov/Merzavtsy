@@ -16,7 +16,8 @@
     "test:contracts": "hardhat test nodejs",
     "test:daemon": "node --import tsx --test daemon/test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run compile && npm run test:contracts && npm run test:daemon && npm run typecheck"
+    "audit:high": "npm audit --audit-level=high",
+    "verify": "npm run compile && npm run test:contracts && npm run test:daemon && npm run typecheck && npm run audit:high"
   },
   "dependencies": {
     "viem": "2.56.0"
