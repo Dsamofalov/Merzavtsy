@@ -562,15 +562,15 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         int256 warmth = int256(uint256(target.sociability)) / 250;
         int256 resistance = int256(uint256(target.stability)) / 250;
         int256 threat = int256(uint256(target.aggression)) / 250;
-        int256 memory = int256(relationship.interactionCount > 20 ? 20 : relationship.interactionCount);
+        int256 historyWeight = int256(relationship.interactionCount > 20 ? 20 : relationship.interactionCount);
 
         if (action == uint8(SocialAction.GREET) || action == uint8(SocialAction.HELP)) {
-            delta.affinity = _delta(int256(delta.affinity) + warmth - threat / 2 + memory + jitter);
-            delta.trust = _delta(int256(delta.trust) + resistance / 2 + memory / 2 + jitter / 2);
+            delta.affinity = _delta(int256(delta.affinity) + warmth - threat / 2 + historyWeight + jitter);
+            delta.trust = _delta(int256(delta.trust) + resistance / 2 + historyWeight / 2 + jitter / 2);
         } else {
-            delta.affinity = _delta(int256(delta.affinity) - resistance / 2 - memory + jitter);
-            delta.trust = _delta(int256(delta.trust) - resistance / 3 - memory / 2 + jitter / 2);
-            delta.rivalry = _delta(int256(delta.rivalry) + threat / 2 + memory);
+            delta.affinity = _delta(int256(delta.affinity) - resistance / 2 - historyWeight + jitter);
+            delta.trust = _delta(int256(delta.trust) - resistance / 3 - historyWeight / 2 + jitter / 2);
+            delta.rivalry = _delta(int256(delta.rivalry) + threat / 2 + historyWeight);
             delta.fear = _delta(int256(delta.fear) + threat / 3);
         }
     }
@@ -772,9 +772,6 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         if (counters[5] != 0) scars |= SCAR_FIRST_DEPLOYMENT;
         if (inactivity >= VERY_LONG_SLEEP) scars |= SCAR_LONG_SLEEP;
         if (age >= OLD_ACCOUNT_AGE) scars |= SCAR_OLD_ACCOUNT;
-
-        uint256 rareCombo = MUTATION_GAS_GILLS | MUTATION_CONTRACT_TEETH | MUTATION_CALLDATA_EYE;
-        if ((mutationMask[tokenId] & rareCombo) == rareCombo) scars |= SCAR_RARE_COMBINATION;
         if (scars != 0) _addScars(tokenId, scars);
     }
 
