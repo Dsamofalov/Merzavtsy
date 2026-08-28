@@ -9,6 +9,7 @@
   "scripts": {
     "build": "hardhat build",
     "compile": "hardhat build",
+    "daemon": "node --import tsx daemon/src/main.ts",
     "test": "hardhat test",
     "test:contracts": "hardhat test nodejs",
     "test:daemon": "node --import tsx --test daemon/test/*.test.ts",
