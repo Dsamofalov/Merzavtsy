@@ -1,5 +1,6 @@
 import type { Hex } from "viem";
 import type { ActivityAttestation } from "./attestation.js";
+import { archiveSignedActivity } from "./signed-archive.js";
 import { DaemonStore, type StoredEpoch } from "./store.js";
 import type { EpochSummary } from "./types.js";
 
@@ -100,6 +101,9 @@ export async function submitPendingEpochs(
 
     const nonce = await dependencies.getNonce(stored.summary.wallet);
     const signed = await dependencies.sign(stored.summary, nonce);
+    // Archive the exact public signed gameplay fact before any broadcast attempt.
+    // The archive contains the payload/signature, never the oracle private key.
+    archiveSignedActivity(dependencies.store, signed);
 
     let txHash: Hex | null = null;
     let broadcastError: unknown;
