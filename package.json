@@ -15,6 +15,8 @@
     "birth": "node --import tsx scripts/birth.ts",
     "show:state": "node --import tsx scripts/show-state.ts",
     "show:relationship": "node --import tsx scripts/show-relationship.ts",
+    "sign:attestation": "node --import tsx scripts/sign-attestation.ts",
+    "submit:attestation": "node --import tsx scripts/submit-attestation.ts",
     "test": "hardhat test",
     "test:contracts": "hardhat test nodejs",
     "test:daemon": "node --import tsx --test daemon/test/*.test.ts",
