@@ -1,9 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
 import type { Address, Hex } from "viem";
+import type { PeerObservation } from "./peer-attestation.js";
 import type { EpochSummary } from "./types.js";
 
 export interface StoredEpoch {
   summary: EpochSummary;
+  broadcastTxHash: Hex | null;
+  submittedTxHash: Hex | null;
+  completed: boolean;
+}
+
+export interface StoredPeerEncounter {
+  observation: PeerObservation;
   broadcastTxHash: Hex | null;
   submittedTxHash: Hex | null;
   completed: boolean;
@@ -32,9 +40,11 @@ function blockNumber(value: bigint): number {
 }
 
 function serializeJson(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) =>
+  const serialized = JSON.stringify(value, (_key, item: unknown) =>
     typeof item === "bigint" ? item.toString() : item,
   );
+  if (serialized === undefined) throw new Error("value is not JSON serializable");
+  return serialized;
 }
 
 function serializeSummary(summary: EpochSummary): string {
@@ -83,6 +93,39 @@ function deserializeSummary(serialized: string): EpochSummary {
   };
 }
 
+function serializePeer(observation: PeerObservation): string {
+  return serializeJson({
+    actorWallet: observation.actorWallet.toLowerCase(),
+    actorTokenId: observation.actorTokenId.toString(),
+    peerWallet: observation.peerWallet.toLowerCase(),
+    peerTokenId: observation.peerTokenId.toString(),
+    chainId: observation.chainId.toString(),
+    blockNumber: observation.blockNumber.toString(),
+    encounterDigest: observation.encounterDigest.toLowerCase(),
+  });
+}
+
+function deserializePeer(serialized: string): PeerObservation {
+  const value = JSON.parse(serialized) as {
+    actorWallet: Address;
+    actorTokenId: string;
+    peerWallet: Address;
+    peerTokenId: string;
+    chainId: string;
+    blockNumber: string;
+    encounterDigest: Hex;
+  };
+  return {
+    actorWallet: value.actorWallet,
+    actorTokenId: BigInt(value.actorTokenId),
+    peerWallet: value.peerWallet,
+    peerTokenId: BigInt(value.peerTokenId),
+    chainId: BigInt(value.chainId),
+    blockNumber: BigInt(value.blockNumber),
+    encounterDigest: value.encounterDigest,
+  };
+}
+
 function toStoredEpoch(row: {
   payload_json: string;
   broadcast_tx_hash: string | null;
@@ -91,6 +134,20 @@ function toStoredEpoch(row: {
 }): StoredEpoch {
   return {
     summary: deserializeSummary(row.payload_json),
+    broadcastTxHash: row.broadcast_tx_hash as Hex | null,
+    submittedTxHash: row.submitted_tx_hash as Hex | null,
+    completed: row.completed !== 0,
+  };
+}
+
+function toStoredPeer(row: {
+  payload_json: string;
+  broadcast_tx_hash: string | null;
+  submitted_tx_hash: string | null;
+  completed: number;
+}): StoredPeerEncounter {
+  return {
+    observation: deserializePeer(row.payload_json),
     broadcastTxHash: row.broadcast_tx_hash as Hex | null,
     submittedTxHash: row.submitted_tx_hash as Hex | null,
     completed: row.completed !== 0,
@@ -236,81 +293,107 @@ export class DaemonStore {
   }
 
   markEpochBroadcast(epochId: Hex, txHash: Hex): boolean {
-    const key = epochId.toLowerCase();
-    const row = this.#db
-      .prepare(
-        "SELECT broadcast_tx_hash, submitted_tx_hash, completed FROM epochs WHERE epoch_id = ?",
-      )
-      .get(key) as
-      | { broadcast_tx_hash: string | null; submitted_tx_hash: string | null; completed: number }
-      | undefined;
-    if (row === undefined) throw new Error(`unknown epoch ${epochId}`);
-    if (row.completed !== 0 || row.submitted_tx_hash !== null) {
-      throw new Error(`epoch ${epochId} already completed`);
-    }
-    if (row.broadcast_tx_hash !== null) {
-      if (row.broadcast_tx_hash.toLowerCase() === txHash.toLowerCase()) return false;
-      throw new Error(`epoch ${epochId} already broadcast as ${row.broadcast_tx_hash}`);
-    }
-
-    this.#db
-      .prepare("UPDATE epochs SET broadcast_tx_hash = ? WHERE epoch_id = ?")
-      .run(txHash.toLowerCase(), key);
-    return true;
+    return this.#markBroadcast("epochs", "epoch_id", epochId, txHash, "epoch");
   }
 
   clearEpochBroadcast(epochId: Hex, txHash: Hex): boolean {
-    const key = epochId.toLowerCase();
-    const row = this.#db
-      .prepare("SELECT broadcast_tx_hash, completed FROM epochs WHERE epoch_id = ?")
-      .get(key) as { broadcast_tx_hash: string | null; completed: number } | undefined;
-    if (row === undefined) throw new Error(`unknown epoch ${epochId}`);
-    if (row.completed !== 0) return false;
-    if (row.broadcast_tx_hash === null) return false;
-    if (row.broadcast_tx_hash.toLowerCase() !== txHash.toLowerCase()) {
-      throw new Error(`epoch ${epochId} broadcast hash mismatch`);
-    }
-
-    this.#db
-      .prepare("UPDATE epochs SET broadcast_tx_hash = NULL WHERE epoch_id = ?")
-      .run(key);
-    return true;
+    return this.#clearBroadcast("epochs", "epoch_id", epochId, txHash, "epoch");
   }
 
   markEpochSubmitted(epochId: Hex, txHash: Hex): boolean {
-    const key = epochId.toLowerCase();
-    const row = this.#db
-      .prepare("SELECT submitted_tx_hash, completed FROM epochs WHERE epoch_id = ?")
-      .get(key) as { submitted_tx_hash: string | null; completed: number } | undefined;
-    if (row === undefined) throw new Error(`unknown epoch ${epochId}`);
-    if (row.submitted_tx_hash !== null) {
-      if (row.submitted_tx_hash.toLowerCase() === txHash.toLowerCase()) return false;
-      throw new Error(`epoch ${epochId} already submitted as ${row.submitted_tx_hash}`);
-    }
-    if (row.completed !== 0) throw new Error(`epoch ${epochId} already completed without tx hash`);
-
-    this.#db
-      .prepare(
-        `UPDATE epochs
-         SET broadcast_tx_hash = ?, submitted_tx_hash = ?, completed = 1
-         WHERE epoch_id = ?`,
-      )
-      .run(txHash.toLowerCase(), txHash.toLowerCase(), key);
-    return true;
+    return this.#markSubmitted("epochs", "epoch_id", epochId, txHash, "epoch");
   }
 
   markEpochConsumed(epochId: Hex): boolean {
-    const key = epochId.toLowerCase();
-    const row = this.#db
-      .prepare("SELECT completed FROM epochs WHERE epoch_id = ?")
-      .get(key) as { completed: number } | undefined;
-    if (row === undefined) throw new Error(`unknown epoch ${epochId}`);
-    if (row.completed !== 0) return false;
+    return this.#markConsumed("epochs", "epoch_id", epochId, "epoch");
+  }
+
+  putPeerEncounter(observation: PeerObservation): boolean {
+    const serialized = serializePeer(observation);
+    const key = observation.encounterDigest.toLowerCase();
+    const existing = this.#db
+      .prepare("SELECT payload_json FROM peer_encounters WHERE encounter_digest = ?")
+      .get(key) as { payload_json: string } | undefined;
+    if (existing !== undefined) {
+      if (existing.payload_json !== serialized) {
+        throw new Error(`peer encounter conflict for ${observation.encounterDigest}`);
+      }
+      return false;
+    }
 
     this.#db
-      .prepare("UPDATE epochs SET completed = 1 WHERE epoch_id = ?")
-      .run(key);
+      .prepare(
+        `INSERT INTO peer_encounters(
+          encounter_digest, chain_id, actor_wallet, actor_token_id,
+          peer_wallet, peer_token_id, block_number, payload_json,
+          broadcast_tx_hash, submitted_tx_hash, completed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0)`,
+      )
+      .run(
+        key,
+        observation.chainId.toString(),
+        observation.actorWallet.toLowerCase(),
+        observation.actorTokenId.toString(),
+        observation.peerWallet.toLowerCase(),
+        observation.peerTokenId.toString(),
+        blockNumber(observation.blockNumber),
+        serialized,
+      );
     return true;
+  }
+
+  pendingPeerEncounters(): StoredPeerEncounter[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT payload_json, broadcast_tx_hash, submitted_tx_hash, completed
+         FROM peer_encounters WHERE completed = 0 ORDER BY block_number, encounter_digest`,
+      )
+      .all() as Array<{
+      payload_json: string;
+      broadcast_tx_hash: string | null;
+      submitted_tx_hash: string | null;
+      completed: number;
+    }>;
+    return rows.map(toStoredPeer);
+  }
+
+  markPeerBroadcast(encounterDigest: Hex, txHash: Hex): boolean {
+    return this.#markBroadcast(
+      "peer_encounters",
+      "encounter_digest",
+      encounterDigest,
+      txHash,
+      "peer encounter",
+    );
+  }
+
+  clearPeerBroadcast(encounterDigest: Hex, txHash: Hex): boolean {
+    return this.#clearBroadcast(
+      "peer_encounters",
+      "encounter_digest",
+      encounterDigest,
+      txHash,
+      "peer encounter",
+    );
+  }
+
+  markPeerSubmitted(encounterDigest: Hex, txHash: Hex): boolean {
+    return this.#markSubmitted(
+      "peer_encounters",
+      "encounter_digest",
+      encounterDigest,
+      txHash,
+      "peer encounter",
+    );
+  }
+
+  markPeerConsumed(encounterDigest: Hex): boolean {
+    return this.#markConsumed(
+      "peer_encounters",
+      "encounter_digest",
+      encounterDigest,
+      "peer encounter",
+    );
   }
 
   recordBirth(owner: Address, tokenId: bigint, birthBlock: bigint): boolean {
@@ -459,6 +542,103 @@ export class DaemonStore {
     }));
   }
 
+  #markBroadcast(
+    table: "epochs" | "peer_encounters",
+    keyColumn: "epoch_id" | "encounter_digest",
+    keyValue: Hex,
+    txHash: Hex,
+    label: string,
+  ): boolean {
+    const key = keyValue.toLowerCase();
+    const row = this.#db
+      .prepare(
+        `SELECT broadcast_tx_hash, submitted_tx_hash, completed FROM ${table} WHERE ${keyColumn} = ?`,
+      )
+      .get(key) as
+      | { broadcast_tx_hash: string | null; submitted_tx_hash: string | null; completed: number }
+      | undefined;
+    if (row === undefined) throw new Error(`unknown ${label} ${keyValue}`);
+    if (row.submitted_tx_hash !== null || row.completed !== 0) {
+      if (row.submitted_tx_hash?.toLowerCase() === txHash.toLowerCase()) return false;
+      throw new Error(`${label} ${keyValue} already completed`);
+    }
+    if (row.broadcast_tx_hash !== null) {
+      if (row.broadcast_tx_hash.toLowerCase() === txHash.toLowerCase()) return false;
+      throw new Error(`${label} ${keyValue} already broadcast as ${row.broadcast_tx_hash}`);
+    }
+    this.#db
+      .prepare(`UPDATE ${table} SET broadcast_tx_hash = ? WHERE ${keyColumn} = ?`)
+      .run(txHash.toLowerCase(), key);
+    return true;
+  }
+
+  #clearBroadcast(
+    table: "epochs" | "peer_encounters",
+    keyColumn: "epoch_id" | "encounter_digest",
+    keyValue: Hex,
+    txHash: Hex,
+    label: string,
+  ): boolean {
+    const key = keyValue.toLowerCase();
+    const row = this.#db
+      .prepare(`SELECT broadcast_tx_hash, completed FROM ${table} WHERE ${keyColumn} = ?`)
+      .get(key) as { broadcast_tx_hash: string | null; completed: number } | undefined;
+    if (row === undefined) throw new Error(`unknown ${label} ${keyValue}`);
+    if (row.completed !== 0 || row.broadcast_tx_hash === null) return false;
+    if (row.broadcast_tx_hash.toLowerCase() !== txHash.toLowerCase()) {
+      throw new Error(`${label} ${keyValue} broadcast hash mismatch`);
+    }
+    this.#db
+      .prepare(`UPDATE ${table} SET broadcast_tx_hash = NULL WHERE ${keyColumn} = ?`)
+      .run(key);
+    return true;
+  }
+
+  #markSubmitted(
+    table: "epochs" | "peer_encounters",
+    keyColumn: "epoch_id" | "encounter_digest",
+    keyValue: Hex,
+    txHash: Hex,
+    label: string,
+  ): boolean {
+    const key = keyValue.toLowerCase();
+    const row = this.#db
+      .prepare(`SELECT submitted_tx_hash, completed FROM ${table} WHERE ${keyColumn} = ?`)
+      .get(key) as { submitted_tx_hash: string | null; completed: number } | undefined;
+    if (row === undefined) throw new Error(`unknown ${label} ${keyValue}`);
+    if (row.submitted_tx_hash !== null) {
+      if (row.submitted_tx_hash.toLowerCase() === txHash.toLowerCase()) return false;
+      throw new Error(`${label} ${keyValue} already submitted as ${row.submitted_tx_hash}`);
+    }
+    if (row.completed !== 0) throw new Error(`${label} ${keyValue} already completed without tx hash`);
+    this.#db
+      .prepare(
+        `UPDATE ${table}
+         SET broadcast_tx_hash = ?, submitted_tx_hash = ?, completed = 1
+         WHERE ${keyColumn} = ?`,
+      )
+      .run(txHash.toLowerCase(), txHash.toLowerCase(), key);
+    return true;
+  }
+
+  #markConsumed(
+    table: "epochs" | "peer_encounters",
+    keyColumn: "epoch_id" | "encounter_digest",
+    keyValue: Hex,
+    label: string,
+  ): boolean {
+    const key = keyValue.toLowerCase();
+    const row = this.#db
+      .prepare(`SELECT completed FROM ${table} WHERE ${keyColumn} = ?`)
+      .get(key) as { completed: number } | undefined;
+    if (row === undefined) throw new Error(`unknown ${label} ${keyValue}`);
+    if (row.completed !== 0) return false;
+    this.#db
+      .prepare(`UPDATE ${table} SET completed = 1 WHERE ${keyColumn} = ?`)
+      .run(key);
+    return true;
+  }
+
   #recordSeen(
     table: "contract_destinations" | "selectors" | "counterparties",
     valueColumn: "contract" | "selector" | "counterparty",
@@ -536,6 +716,20 @@ export class DaemonStore {
         submitted_tx_hash TEXT,
         completed INTEGER NOT NULL DEFAULT 0,
         UNIQUE(chain_id, wallet, from_block, to_block)
+      );
+
+      CREATE TABLE IF NOT EXISTS peer_encounters(
+        encounter_digest TEXT PRIMARY KEY,
+        chain_id TEXT NOT NULL,
+        actor_wallet TEXT NOT NULL,
+        actor_token_id TEXT NOT NULL,
+        peer_wallet TEXT NOT NULL,
+        peer_token_id TEXT NOT NULL,
+        block_number INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        broadcast_tx_hash TEXT,
+        submitted_tx_hash TEXT,
+        completed INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS contract_destinations(
