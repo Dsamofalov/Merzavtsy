@@ -37,4 +37,11 @@ describe("Docker packaging", () => {
       assert.ok(dockerignore.split(/\r?\n/).includes(required), `.dockerignore must contain ${required}`);
     }
   });
+
+  it("CI performs a real daemon image build after repository verification", async () => {
+    const workflow = await textOrEmpty(".github/workflows/bootstrap-lock.yml");
+
+    assert.match(workflow, /name:\s*Build daemon image/);
+    assert.match(workflow, /docker build --tag merzavtsy-daemon:ci \./);
+  });
 });
