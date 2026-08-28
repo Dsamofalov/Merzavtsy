@@ -66,6 +66,7 @@ export function createDaemonApplication(
     finalityDepth: options.config.finalityDepth,
     epochBlocks: options.config.epochBlocks,
     highGasThreshold,
+    minimumMeaningfulWei: options.config.minimumMeaningfulWei ?? 0n,
     getHeadBlock: options.getHeadBlock,
     getBornEvents: (fromBlock, toBlock) => options.io.bornEvents(fromBlock, toBlock),
     getIndexedEvents: (fromBlock, toBlock) => options.io.indexedEvents(fromBlock, toBlock),
