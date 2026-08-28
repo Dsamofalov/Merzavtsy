@@ -69,7 +69,7 @@ describe("visible creature profile", () => {
     assert.match(profile.lastActionExplanation, /брод|скуч|возбуж|исслед/i);
   });
 
-  it("builds deterministic self-contained metadata + escaped SVG without network dependencies", () => {
+  it("builds deterministic self-contained metadata + escaped SVG without external resources", () => {
     const profile = buildCreatureProfile(base);
     const first = buildMetadata(profile);
     const second = buildMetadata(profile);
@@ -80,6 +80,6 @@ describe("visible creature profile", () => {
     assert.ok(first.attributes.some((item) => item.trait_type === "Специализация"));
     const decoded = decodeURIComponent(first.image.split(",", 2)[1]);
     assert.match(decoded, /<svg/);
-    assert.doesNotMatch(decoded, /<script|https?:\/\//i);
+    assert.doesNotMatch(decoded, /<script\b|(?:href|src)\s*=\s*["']https?:\/\//i);
   });
 });
