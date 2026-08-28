@@ -81,6 +81,8 @@ export interface EpochSummary {
    * Explicit mutation-only counters, separate from stable category indexes:
    * 0 cadence bursts, 1 bridge/network-like observations,
    * 2 hostile-social observations, 3 repeated protocol co-occurrence.
+   * Optional only at the persistence compatibility boundary: legacy SQLite
+   * rows created before this field existed are treated as all-zero counters.
    */
-  mutationCounters: MutationCounters;
+  mutationCounters?: MutationCounters;
 }
