@@ -4,22 +4,22 @@ import type { DeploymentMetadata } from "./deployment.js";
 
 export interface BootstrapChainState {
   chainId: bigint;
-  identityWorld: Address;
-  worldOracle: Address;
-  oracleIdentity: Address;
-  oracleWorld: Address;
+  identityWorld: string;
+  worldOracle: string;
+  oracleIdentity: string;
+  oracleWorld: string;
   identityHasCode: boolean;
   worldHasCode: boolean;
   oracleHasCode: boolean;
 }
 
-function sameAddress(left: Address, right: Address): boolean {
+function sameAddress(left: string, right: Address): boolean {
   return left.toLowerCase() === right.toLowerCase();
 }
 
 function requireAddressMatch(
   label: string,
-  actual: Address,
+  actual: string,
   expected: Address,
 ): void {
   if (!sameAddress(actual, expected)) {
