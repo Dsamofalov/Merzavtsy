@@ -1,4 +1,5 @@
 import { encodePacked, keccak256, toHex } from "viem";
+import type { ActivityHistoryMetrics } from "./activity-history.js";
 import {
   ActivityCategory,
   type CategoryCounters,
@@ -15,6 +16,7 @@ const MAX_PERSONALITY_DELTA = 1_000;
 const MAX_NEED_DELTA = 2_000;
 const MAX_CATEGORY_COUNTER = 1_000;
 const MAX_MUTATION_COUNTER = 1_000;
+const MAX_PAIR_CONTACTS_PER_EPOCH = 3;
 
 const XP_POINTS: CategoryCounters = [10, 10, 25, 40, 10, 100, 20, 50, 15, 30];
 
@@ -61,6 +63,37 @@ function canonicalActivity(activity: ClassifiedActivity): string {
   ].join(":");
 }
 
+function effectiveRawCounters(activities: readonly ClassifiedActivity[]): CategoryCounters {
+  const rawCounters = blankCounters();
+  const peerUsage = new Map<string, number>();
+  for (const activity of activities) {
+    if (!Number.isSafeInteger(activity.units) || activity.units < 0) {
+      throw new Error("activity units must be a non-negative safe integer");
+    }
+    if (activity.category < 0 || activity.category > ActivityCategory.SELECTOR_DIVERSITY) {
+      throw new Error("invalid activity category");
+    }
+
+    let units = activity.units;
+    if (activity.category === ActivityCategory.REGISTERED_PEER_CONTACT && activity.peerTokenId !== undefined) {
+      const key = activity.peerTokenId.toString();
+      const used = peerUsage.get(key) ?? 0;
+      units = Math.min(units, Math.max(0, MAX_PAIR_CONTACTS_PER_EPOCH - used));
+      peerUsage.set(key, used + units);
+    }
+    rawCounters[activity.category] += units;
+  }
+  return rawCounters;
+}
+
+function historyXpScaleBps(history: ActivityHistoryMetrics | undefined): number {
+  if (history === undefined) return 10_000;
+  let penalty = Math.min(4_000, Math.max(0, history.burstCount) * 50);
+  if (history.transactionCount > 100) penalty += 1_000;
+  if (history.averageGapSeconds > 0n && history.averageGapSeconds < 15n) penalty += 500;
+  return Math.max(4_000, 10_000 - Math.min(6_000, penalty));
+}
+
 function buildPersonality(scores: CategoryCounters): PersonalityDeltas {
   const sent = scores[ActivityCategory.TX_SENT];
   const received = scores[ActivityCategory.TX_RECEIVED];
@@ -103,7 +136,10 @@ function buildNeeds(scores: CategoryCounters): NeedDeltas {
   ];
 }
 
-function buildMutationCounters(activities: readonly ClassifiedActivity[]): MutationCounters {
+function buildMutationCounters(
+  activities: readonly ClassifiedActivity[],
+  history: ActivityHistoryMetrics | undefined,
+): MutationCounters {
   const result = blankMutationCounters();
   const perBlock = new Map<string, number>();
   const perContract = new Map<string, number>();
@@ -118,9 +154,11 @@ function buildMutationCounters(activities: readonly ClassifiedActivity[]): Mutat
   }
 
   for (const count of perBlock.values()) if (count >= 3) result[0] += 1;
-  // Counter 1 (bridge/network-like) is supplied by the durable activity-history classifier.
+  if (history !== undefined) result[0] += Math.max(0, history.burstCount);
+  // Counter 1 (bridge/network-like) is supplied by richer protocol metadata when available.
   // Counter 2 (hostile-social history) is canonicalized by World from social actions.
   for (const count of perContract.values()) if (count >= 2) result[3] += 1;
+  if (history !== undefined) result[3] += Math.max(0, history.repeatedProtocolContracts);
 
   return result.map((value) => Math.min(value, MAX_MUTATION_COUNTER)) as MutationCounters;
 }
@@ -132,21 +170,17 @@ export function aggregateEpoch(
   fromBlock: bigint,
   toBlock: bigint,
   activities: readonly ClassifiedActivity[],
+  history?: ActivityHistoryMetrics,
 ): EpochSummary {
   if (fromBlock > toBlock) throw new Error("invalid epoch block range");
 
-  const rawCounters = blankCounters();
-  for (const activity of activities) {
-    if (!Number.isSafeInteger(activity.units) || activity.units < 0) throw new Error("activity units must be a non-negative safe integer");
-    if (activity.category < 0 || activity.category > ActivityCategory.SELECTOR_DIVERSITY) throw new Error("invalid activity category");
-    rawCounters[activity.category] += activity.units;
-  }
-
+  const rawCounters = effectiveRawCounters(activities);
   const categoryCounters = rawCounters.map((value) => Math.min(value, MAX_CATEGORY_COUNTER)) as CategoryCounters;
   const scores = rawCounters.map(diminishingScore) as CategoryCounters;
 
   let xp = 0;
   for (let index = 0; index < XP_POINTS.length; index += 1) xp += points(scores[index], XP_POINTS[index]);
+  xp = Math.trunc((xp * historyXpScaleBps(history)) / 10_000);
   xp = clamp(xp, 0, MAX_XP_DELTA);
 
   const canonical = activities.map(canonicalActivity).sort();
@@ -167,6 +201,6 @@ export function aggregateEpoch(
     personalityDeltas: buildPersonality(scores),
     needDeltas: buildNeeds(scores),
     categoryCounters,
-    mutationCounters: buildMutationCounters(activities),
+    mutationCounters: buildMutationCounters(activities, history),
   };
 }
