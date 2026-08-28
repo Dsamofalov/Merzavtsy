@@ -73,6 +73,13 @@ describe("runtime config", () => {
     }
   });
 
+  it("requires separate oracle and submitter keys", () => {
+    assert.throws(
+      () => loadConfig(productionEnv({ SUBMITTER_PRIVATE_KEY: keyA })),
+      /must use different keys/,
+    );
+  });
+
   it("rejects unsafe operational bounds", () => {
     for (const finality of [undefined, "", "0", "-1", "1.5", "x"]) {
       assert.throws(
