@@ -1,0 +1,90 @@
+name: sepolia-proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      oracle_signer_address:
+        description: "Non-zero Sepolia address that will receive ORACLE_SIGNER_ROLE"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sepolia-proof
+  cancel-in-progress: false
+
+jobs:
+  deploy-smoke-proof:
+    name: deploy / smoke / preserve proof
+    runs-on: ubuntu-latest
+    environment: sepolia
+    timeout-minutes: 30
+    env:
+      CHAIN_ID: "11155111"
+      RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+      DEPLOYER_PRIVATE_KEY: ${{ secrets.SEPOLIA_DEPLOYER_PRIVATE_KEY }}
+      ORACLE_SIGNER_ADDRESS: ${{ inputs.oracle_signer_address }}
+      ALLOW_MAINNET_DEPLOY: "false"
+      SEPOLIA_PROOF_PATH: proofs/sepolia-smoke.json
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate required Sepolia inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RPC_URL}" ]]; then
+            echo "::error::Missing Actions secret SEPOLIA_RPC_URL"
+            exit 1
+          fi
+          if [[ -z "${DEPLOYER_PRIVATE_KEY}" ]]; then
+            echo "::error::Missing Actions secret SEPOLIA_DEPLOYER_PRIVATE_KEY"
+            exit 1
+          fi
+          if [[ ! "${ORACLE_SIGNER_ADDRESS}" =~ ^0x[0-9a-fA-F]{40}$ ]] || [[ "${ORACLE_SIGNER_ADDRESS}" =~ ^0x0{40}$ ]]; then
+            echo "::error::oracle_signer_address must be a non-zero Ethereum address"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify repository before deployment
+        run: npm run verify
+
+      - name: Deploy contracts to Sepolia
+        run: npm run deploy
+
+      - name: Run fail-closed Sepolia smoke and write proof
+        run: npm run smoke:sepolia
+
+      - name: Build provenance manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s proofs/sepolia-smoke.json
+          test -s deployments/11155111.json
+          sha256sum proofs/sepolia-smoke.json deployments/11155111.json > proofs/SHA256SUMS
+          node -e 'const fs=require("fs"); fs.writeFileSync("proofs/github-run.json", JSON.stringify({repository:process.env.GITHUB_REPOSITORY, commit:process.env.GITHUB_SHA, ref:process.env.GITHUB_REF, runId:process.env.GITHUB_RUN_ID, runAttempt:process.env.GITHUB_RUN_ATTEMPT, generatedAt:new Date().toISOString()}, null, 2)+"\n")'
+
+      - name: Preserve Sepolia deployment proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: sepolia-proof-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            proofs/sepolia-smoke.json
+            proofs/SHA256SUMS
+            proofs/github-run.json
+            deployments/11155111.json
