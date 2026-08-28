@@ -7,8 +7,8 @@ import { parseDeploymentMetadata } from "../daemon/src/deployment.js";
 export interface CreatureStateSnapshot {
   xp: bigint;
   level: number;
-  lastActivityAt: bigint;
-  lastLifeTickAt: bigint;
+  lastActivityAt: number | bigint;
+  lastLifeTickAt: number | bigint;
   stage: number;
   hibernating: boolean;
   aggression: number;
@@ -82,7 +82,7 @@ export async function runShowStateCli(
         abi: WORLD_ABI,
         functionName: "stateOf",
         args: [id],
-      }) as Promise<CreatureStateSnapshot>;
+      });
     },
   });
   console.log(bigintJson({ chainId, ...result }));
