@@ -34,6 +34,34 @@ export interface ActivityMerkleProof {
   siblings: Hex[];
 }
 
+export function parseAuditSignerAllowlist(env: NodeJS.ProcessEnv): Address[] {
+  const raw = env.ORACLE_SIGNER_ADDRESSES?.trim() || env.ORACLE_SIGNER_ADDRESS?.trim();
+  if (!raw) {
+    throw new Error("ORACLE_SIGNER_ADDRESSES or ORACLE_SIGNER_ADDRESS is required for attestation audit");
+  }
+
+  const seen = new Set<string>();
+  const result: Address[] = [];
+  for (const item of raw.split(",")) {
+    const value = item.trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(value)) {
+      throw new Error("oracle signer allowlist contains an invalid address");
+    }
+    if (/^0x0{40}$/i.test(value)) {
+      throw new Error("oracle signer address must be non-zero");
+    }
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value as Address);
+  }
+
+  if (result.length === 0) {
+    throw new Error("ORACLE_SIGNER_ADDRESSES must contain at least one authorized signer");
+  }
+  return result;
+}
+
 function canonicalLeaf(digest: Hex, signature: Hex): Hex {
   return keccak256(toHex(`${digest.toLowerCase()}:${signature.toLowerCase()}`));
 }
