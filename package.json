@@ -17,14 +17,17 @@
     "show:relationship": "node --import tsx scripts/show-relationship.ts",
     "sign:attestation": "node --import tsx scripts/sign-attestation.ts",
     "submit:attestation": "node --import tsx scripts/submit-attestation.ts",
+    "export:attestations": "node --import tsx scripts/export-attestations.ts",
+    "rotate:signer": "node --import tsx scripts/rotate-signer.ts",
     "reorg:status": "node --import tsx scripts/reorg-control.ts status",
     "reorg:clear": "node --import tsx scripts/reorg-control.ts clear",
     "test": "hardhat test",
     "test:contracts": "hardhat test nodejs",
     "test:daemon": "node --import tsx --test daemon/test/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "audit:secrets": "node --import tsx scripts/secret-scan.ts",
     "audit:high": "npm audit --audit-level=high",
-    "verify": "npm run compile && npm run test:contracts && npm run test:daemon && npm run typecheck && npm run audit:high"
+    "verify": "npm run compile && npm run test:contracts && npm run test:daemon && npm run typecheck && npm run audit:secrets && npm run audit:high"
   },
   "dependencies": {
     "viem": "2.56.0"
