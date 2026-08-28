@@ -83,12 +83,12 @@ async function fixture() {
 describe("expanded approved design", () => {
   it("initializes and bounds arousal + stabilityState and uses them in autonomous life", async () => {
     const { keeper, world } = await networkHelpers.loadFixture(fixture);
-    const initial = await world.read.stateOf([1n]);
+    const initial = await world.read.extendedNeedsOf([1n]);
     assert.ok(initial.arousal >= 0 && initial.arousal <= 10_000);
     assert.ok(initial.stabilityState >= 0 && initial.stabilityState <= 10_000);
     await networkHelpers.time.increase(6 * 60 * 60 + 1);
     await world.write.lifeTick([1n], { account: keeper.account });
-    const next = await world.read.stateOf([1n]);
+    const next = await world.read.extendedNeedsOf([1n]);
     assert.ok(next.arousal >= 0 && next.arousal <= 10_000);
     assert.ok(next.stabilityState >= 0 && next.stabilityState <= 10_000);
   });
@@ -122,8 +122,8 @@ describe("expanded approved design", () => {
 
   it("gates advanced autonomous intents by level", async () => {
     const { world } = await networkHelpers.loadFixture(fixture);
-    assert.equal(await world.read.intentUnlocked([1n, 2]), false); // SEEK_COMPANY
-    assert.equal(await world.read.intentUnlocked([1n, 3]), false); // MOCK_RIVAL
+    assert.equal(await world.read.intentUnlocked([1n, 2]), false);
+    assert.equal(await world.read.intentUnlocked([1n, 3]), false);
     assert.equal(await world.read.intentUnlocked([2n, 2]), true);
     assert.equal(await world.read.intentUnlocked([3n, 3]), true);
   });
