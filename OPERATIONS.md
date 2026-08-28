@@ -71,6 +71,32 @@ SQLite uses durable idempotency state. Before repair:
 - verify pending/broadcast state against chain receipts;
 - preserve the operational fail-stop journal.
 
+## Sepolia deployment proof workflow
+
+The repository ships a manually gated GitHub Actions workflow at `.github/workflows/sepolia-proof.yml`. It is intentionally separate from pull-request CI because it spends Sepolia ETH and requires deployment credentials.
+
+Before the first run, configure the GitHub Actions `sepolia` environment with these secrets:
+
+- `SEPOLIA_RPC_URL` — an HTTPS/WSS-capable Sepolia JSON-RPC endpoint accepted by the deployment scripts;
+- `SEPOLIA_DEPLOYER_PRIVATE_KEY` — a funded Sepolia-only deployment key. Do not reuse a production mainnet key.
+
+Start the `sepolia-proof` workflow manually and provide `oracle_signer_address`, a non-zero Sepolia address that should receive the initial `ORACLE_SIGNER_ROLE`. The workflow pins `CHAIN_ID=11155111`, runs the full repository verification gate first, deploys `Merzavets`, `MerzavetsWorld` and `ActivityOracle`, runs `npm run smoke:sepolia`, and fails closed on chain/topology mismatch.
+
+A successful run uploads one immutable evidence bundle containing:
+
+- `proofs/sepolia-smoke.json` — healthy-chain smoke proof produced by the repository command;
+- `deployments/11155111.json` — exact deployed contract addresses and deployment block;
+- `proofs/SHA256SUMS` — hashes binding the deployment metadata and smoke proof;
+- `proofs/github-run.json` — repository, commit SHA, ref, Actions run ID/attempt and generation timestamp.
+
+Keep the successful Actions run URL and downloaded artifact with the release record. A repository-side test or a locally fabricated JSON file is **not** equivalent to this external Sepolia proof.
+
+## External smart-contract audit gate
+
+Repository CI, property tests, secret scanning and an internal code review are prerequisites, not substitutes for an independent smart-contract audit. Before production mainnet release, provide the auditor the exact release commit SHA plus `contracts/`, `ARCHITECTURE.md`, `SECURITY.md`, `OPERATIONS.md` and the successful Sepolia proof bundle. Freeze contract-changing commits during audit or require all post-audit contract changes to be explicitly reviewed as audit deltas.
+
+Do not mark the external-audit release gate complete until an independent reviewer/auditor has delivered a report for the exact release scope and all critical/high findings are either fixed and re-reviewed or explicitly accepted by the release owner.
+
 ## Rollout order
 
 Use local development first, then Sepolia, then mainnet. A mainnet deployment should be blocked until a Sepolia end-to-end run has evidence for birth, activity classification, signed/submitted attestation, replay rejection, restart persistence and autonomous life.
