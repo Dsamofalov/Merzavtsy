@@ -26,53 +26,61 @@ function env(): NodeJS.ProcessEnv {
   };
 }
 
+function runtimeIo(calls: string[] = []) {
+  return {
+    async bootstrapState() {
+      calls.push("bootstrap");
+      return {
+        chainId: 31337n,
+        identityWorld: world,
+        worldOracle: oracle,
+        oracleIdentity: identity,
+        oracleWorld: world,
+        identityHasCode: true,
+        worldHasCode: true,
+        oracleHasCode: true,
+      };
+    },
+    async bornEvents() { return []; },
+    async indexedEvents() { return []; },
+    submissionGateway() {
+      return {
+        async activityNonce() { return 0n; },
+        async peerNonce() { return 0n; },
+        async epochConsumed() { return false; },
+        async peerConsumed() { return false; },
+        async broadcastActivity() { return tx; },
+        async broadcastPeer() { return tx; },
+        async waitForReceipt() { return "success" as const; },
+      };
+    },
+    async lifeState() { return { lastLifeTickAt: 0n, hibernating: false }; },
+    async sendLifeTick() { return tx; },
+    async now() { return 1_900_000_000n; },
+  };
+}
+
+function metadata() {
+  return JSON.stringify({
+    chainId: "31337",
+    identityAddress: identity,
+    worldAddress: world,
+    oracleAddress: oracle,
+    deploymentBlock: "100",
+    deployedAt: "2026-08-28T00:00:00.000Z",
+  });
+}
+
 describe("production daemon startup", () => {
   it("loads matching deployment metadata, validates topology, then opens the durable store", async () => {
     const calls: string[] = [];
     const oracleSigner = privateKeyToAccount(`0x${"11".repeat(32)}`);
-    const io = {
-      async bootstrapState() {
-        calls.push("bootstrap");
-        return {
-          chainId: 31337n,
-          identityWorld: world,
-          worldOracle: oracle,
-          oracleIdentity: identity,
-          oracleWorld: world,
-          identityHasCode: true,
-          worldHasCode: true,
-          oracleHasCode: true,
-        };
-      },
-      async bornEvents() { return []; },
-      async indexedEvents() { return []; },
-      submissionGateway() {
-        return {
-          async activityNonce() { return 0n; },
-          async peerNonce() { return 0n; },
-          async epochConsumed() { return false; },
-          async peerConsumed() { return false; },
-          async broadcastActivity() { return tx; },
-          async broadcastPeer() { return tx; },
-          async waitForReceipt() { return "success" as const; },
-        };
-      },
-      async lifeState() { return { lastLifeTickAt: 0n, hibernating: false }; },
-      async sendLifeTick() { return tx; },
-      async now() { return 1_900_000_000n; },
-    };
+    const io = runtimeIo(calls);
 
     const prepared = await prepareProductionDaemon(env(), {
       async readText(path) {
         calls.push(`read:${path}`);
-        return JSON.stringify({
-          chainId: "31337",
-          identityAddress: identity,
-          worldAddress: world,
-          oracleAddress: oracle,
-          deploymentBlock: "100",
-          deployedAt: "2026-08-28T00:00:00.000Z",
-        });
+        return metadata();
       },
       createNetwork() {
         calls.push("network");
@@ -99,6 +107,39 @@ describe("production daemon startup", () => {
     assert.equal(prepared.deployment.deploymentBlock, 100n);
     assert.equal(prepared.service.pollIntervalMs, 250);
     prepared.store.close();
+  });
+
+  it("propagates an injectable logger so production runtime emits structured phase signals", async () => {
+    const events: string[] = [];
+    const logger = {
+      debug(event: string) { events.push(event); },
+      info(event: string) { events.push(event); },
+      warn(event: string) { events.push(event); },
+      error(event: string) { events.push(event); },
+    };
+    const oracleSigner = privateKeyToAccount(`0x${"11".repeat(32)}`);
+    const prepared = await prepareProductionDaemon(env(), {
+      async readText() { return metadata(); },
+      createNetwork() {
+        return {
+          io: runtimeIo(),
+          oracleSigner: oracleSigner as LocalAccount,
+          async getHeadBlock() { return 100n; },
+          async getBlocks() { throw new Error("no finalized blocks expected"); },
+          async destinationHasCode() { return false; },
+        };
+      },
+      openStore(path) { return new DaemonStore(path); },
+      logger,
+    } as never);
+
+    try {
+      await prepared.service.runOnce();
+      assert.ok(events.includes("chain_progress"));
+      assert.ok(events.includes("registered_wallet_count"));
+    } finally {
+      prepared.store.close();
+    }
   });
 
   it("does not open SQLite when deployment metadata disagrees with environment", async () => {
