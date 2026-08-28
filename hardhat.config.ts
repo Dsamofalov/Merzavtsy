@@ -10,6 +10,9 @@ export default defineConfig({
         enabled: true,
         runs: 200,
       },
+      // MerzavetsWorld intentionally hashes a rich autonomous-life context.
+      // viaIR avoids legacy stack-slot exhaustion without changing source-level rules.
+      viaIR: true,
     },
   },
 });
