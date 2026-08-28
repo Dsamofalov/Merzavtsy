@@ -50,6 +50,20 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     uint256 public constant SCAR_FIRST_DEPLOYMENT = 1 << 0;
     uint256 public constant SCAR_LONG_SLEEP = 1 << 1;
     uint256 public constant SCAR_FIRST_MUTATION = 1 << 2;
+    uint256 public constant SCAR_FIRST_RIVALRY = 1 << 3;
+    uint256 public constant SCAR_OLD_ACCOUNT = 1 << 4;
+    uint256 public constant SCAR_RARE_COMBINATION = 1 << 5;
+
+    uint256 public constant RELATIONSHIP_FRIEND = 1 << 0;
+    uint256 public constant RELATIONSHIP_RIVAL = 1 << 1;
+    uint256 public constant RELATIONSHIP_BETRAYED = 1 << 2;
+
+    int256 private constant FRIEND_AFFINITY_THRESHOLD = 1_000;
+    int256 private constant FRIEND_TRUST_THRESHOLD = 800;
+    int256 private constant RIVAL_AFFINITY_THRESHOLD = -1_000;
+    uint256 private constant RIVALRY_THRESHOLD = 1_500;
+    uint256 private constant DOUBLE_TONGUE_HOSTILE_ACTIONS = 6;
+    uint256 private constant OLD_ACCOUNT_AGE = 90 days;
 
     enum Stage {
         ZARODYSH,
@@ -127,8 +141,11 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     mapping(uint256 tokenId => uint32 count) public meaningfulEventCount;
     mapping(uint256 tokenId => uint256 mask) public mutationMask;
     mapping(uint256 tokenId => uint256 mask) public scarMask;
+    mapping(uint256 tokenId => mapping(uint256 scarBit => uint32 count)) public scarUnlockCount;
     mapping(uint256 tokenId => uint32 count) public awakeningCount;
+    mapping(uint256 tokenId => uint32 count) public hostileSocialCount;
     mapping(uint256 actor => mapping(uint256 target => Relationship relationship)) private _relationships;
+    mapping(uint256 actor => mapping(uint256 target => uint256 mask)) public relationshipMilestoneMask;
     mapping(uint256 tokenId => uint256 peerTokenId) public preferredPeer;
     mapping(uint256 tokenId => uint8 intent) public lastLifeIntent;
     mapping(uint256 tokenId => uint32 count) public lifeActionCount;
@@ -156,6 +173,12 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         int16 affinity,
         int16 trust,
         uint16 rivalry
+    );
+    event RelationshipMilestone(
+        uint256 indexed actorTokenId,
+        uint256 indexed targetTokenId,
+        uint256 indexed milestoneBit,
+        uint256 fullMask
     );
     event LifeAction(uint256 indexed tokenId, uint8 indexed intent, uint32 actionCount);
     event BiographyXp(uint256 indexed tokenId, uint8 indexed source, uint64 amount, uint64 totalXp);
@@ -265,6 +288,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         SocialRules.Deltas memory delta = SocialRules.forPeerContact(actor.sociability);
         Relationship storage relationship = _relationships[actorTokenId][peerTokenId];
         _applyRelationshipDelta(relationship, delta);
+        _evaluateRelationshipMilestones(actorTokenId, peerTokenId, false);
 
         preferredPeer[actorTokenId] = peerTokenId;
         actor.socialNeed = MerzavetsMath.clampStat(int256(uint256(actor.socialNeed)) - 100);
@@ -391,6 +415,19 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         return level >= 1;
     }
 
+    function previewSocialOutcome(
+        uint256 actorTokenId,
+        uint256 targetTokenId,
+        uint8 action
+    ) external view returns (SocialRules.Deltas memory) {
+        if (_states[actorTokenId].level == 0 || _states[targetTokenId].level == 0) {
+            revert CreatureNotInitialized();
+        }
+        if (actorTokenId == targetTokenId) revert InvalidPeer();
+        if (action > uint8(SocialAction.THREATEN)) revert InvalidSocialAction();
+        return _socialOutcome(actorTokenId, targetTokenId, action);
+    }
+
     function _applyPersonalityDeltas(CreatureState storage state, int16[8] calldata deltas) private {
         state.aggression = MerzavetsMath.clampStat(int256(uint256(state.aggression)) + int256(deltas[0]));
         state.curiosity = MerzavetsMath.clampStat(int256(uint256(state.curiosity)) + int256(deltas[1]));
@@ -452,10 +489,20 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     }
 
     function _applySocialAction(uint256 actorTokenId, uint256 targetTokenId, uint8 action) private {
-        CreatureState storage actor = _states[actorTokenId];
         Relationship storage relationship = _relationships[actorTokenId][targetTokenId];
-        SocialRules.Deltas memory delta = SocialRules.forAction(action, actor.aggression, actor.sociability, actor.chaos);
+        bool hostile = action == uint8(SocialAction.MOCK) || action == uint8(SocialAction.THREATEN);
+        SocialRules.Deltas memory delta = _socialOutcome(actorTokenId, targetTokenId, action);
         _applyRelationshipDelta(relationship, delta);
+
+        if (hostile) {
+            uint32 count = hostileSocialCount[actorTokenId];
+            if (count != type(uint32).max) hostileSocialCount[actorTokenId] = count + 1;
+            if (hostileSocialCount[actorTokenId] >= DOUBLE_TONGUE_HOSTILE_ACTIONS) {
+                _unlockMutation(actorTokenId, MUTATION_DOUBLE_TONGUE);
+            }
+        }
+
+        _evaluateRelationshipMilestones(actorTokenId, targetTokenId, hostile);
         emit SocialActionTaken(
             actorTokenId,
             targetTokenId,
@@ -466,9 +513,138 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         );
     }
 
+    function _socialOutcome(
+        uint256 actorTokenId,
+        uint256 targetTokenId,
+        uint8 action
+    ) private view returns (SocialRules.Deltas memory delta) {
+        CreatureState storage actor = _states[actorTokenId];
+        CreatureState storage target = _states[targetTokenId];
+        Relationship storage relationship = _relationships[actorTokenId][targetTokenId];
+
+        delta = SocialRules.forAction(action, actor.aggression, actor.sociability, actor.chaos);
+
+        bytes32 actorHash = keccak256(
+            abi.encode(actor.aggression, actor.curiosity, actor.sociability, actor.stability, actor.chaos, actor.memoryBias)
+        );
+        bytes32 targetHash = keccak256(
+            abi.encode(target.aggression, target.curiosity, target.sociability, target.stability, target.chaos, target.memoryBias)
+        );
+        bytes32 historyHash = keccak256(
+            abi.encode(
+                relationship.affinity,
+                relationship.trust,
+                relationship.fear,
+                relationship.respect,
+                relationship.envy,
+                relationship.rivalry,
+                relationship.interactionCount,
+                meaningfulEventCount[actorTokenId],
+                hostileSocialCount[actorTokenId]
+            )
+        );
+        uint256 seed = uint256(
+            keccak256(
+                abi.encode(
+                    genomeSeedOf[actorTokenId],
+                    genomeSeedOf[targetTokenId],
+                    actorTokenId,
+                    targetTokenId,
+                    action,
+                    actorHash,
+                    targetHash,
+                    historyHash
+                )
+            )
+        );
+
+        int256 jitter = int256(seed % 41) - 20;
+        int256 warmth = int256(uint256(target.sociability)) / 250;
+        int256 resistance = int256(uint256(target.stability)) / 250;
+        int256 threat = int256(uint256(target.aggression)) / 250;
+        int256 memory = int256(relationship.interactionCount > 20 ? 20 : relationship.interactionCount);
+
+        if (action == uint8(SocialAction.GREET) || action == uint8(SocialAction.HELP)) {
+            delta.affinity = _delta(int256(delta.affinity) + warmth - threat / 2 + memory + jitter);
+            delta.trust = _delta(int256(delta.trust) + resistance / 2 + memory / 2 + jitter / 2);
+        } else {
+            delta.affinity = _delta(int256(delta.affinity) - resistance / 2 - memory + jitter);
+            delta.trust = _delta(int256(delta.trust) - resistance / 3 - memory / 2 + jitter / 2);
+            delta.rivalry = _delta(int256(delta.rivalry) + threat / 2 + memory);
+            delta.fear = _delta(int256(delta.fear) + threat / 3);
+        }
+    }
+
+    function _evaluateRelationshipMilestones(
+        uint256 actorTokenId,
+        uint256 targetTokenId,
+        bool hostile
+    ) private {
+        Relationship storage relationship = _relationships[actorTokenId][targetTokenId];
+        uint256 current = relationshipMilestoneMask[actorTokenId][targetTokenId];
+
+        if (
+            (current & RELATIONSHIP_FRIEND) == 0
+                && int256(relationship.affinity) >= FRIEND_AFFINITY_THRESHOLD
+                && int256(relationship.trust) >= FRIEND_TRUST_THRESHOLD
+        ) {
+            current = _recordRelationshipMilestone(
+                actorTokenId,
+                targetTokenId,
+                current,
+                RELATIONSHIP_FRIEND
+            );
+        }
+
+        if (
+            (current & RELATIONSHIP_RIVAL) == 0
+                && int256(relationship.affinity) <= RIVAL_AFFINITY_THRESHOLD
+                && uint256(relationship.rivalry) >= RIVALRY_THRESHOLD
+        ) {
+            current = _recordRelationshipMilestone(
+                actorTokenId,
+                targetTokenId,
+                current,
+                RELATIONSHIP_RIVAL
+            );
+            _addScars(actorTokenId, SCAR_FIRST_RIVALRY);
+        }
+
+        if (
+            hostile && (current & RELATIONSHIP_FRIEND) != 0
+                && (current & RELATIONSHIP_BETRAYED) == 0
+        ) {
+            _recordRelationshipMilestone(
+                actorTokenId,
+                targetTokenId,
+                current,
+                RELATIONSHIP_BETRAYED
+            );
+        }
+    }
+
+    function _recordRelationshipMilestone(
+        uint256 actorTokenId,
+        uint256 targetTokenId,
+        uint256 current,
+        uint256 milestoneBit
+    ) private returns (uint256 next) {
+        next = current | milestoneBit;
+        relationshipMilestoneMask[actorTokenId][targetTokenId] = next;
+        emit RelationshipMilestone(actorTokenId, targetTokenId, milestoneBit, next);
+    }
+
     function _applyRelationshipDelta(Relationship storage relationship, SocialRules.Deltas memory delta) private {
-        relationship.affinity = MerzavetsMath.clampSigned(int256(relationship.affinity) + int256(delta.affinity), -10_000, 10_000);
-        relationship.trust = MerzavetsMath.clampSigned(int256(relationship.trust) + int256(delta.trust), -10_000, 10_000);
+        relationship.affinity = MerzavetsMath.clampSigned(
+            int256(relationship.affinity) + int256(delta.affinity),
+            -10_000,
+            10_000
+        );
+        relationship.trust = MerzavetsMath.clampSigned(
+            int256(relationship.trust) + int256(delta.trust),
+            -10_000,
+            10_000
+        );
         relationship.fear = MerzavetsMath.clampStat(int256(uint256(relationship.fear)) + int256(delta.fear));
         relationship.respect = MerzavetsMath.clampStat(int256(uint256(relationship.respect)) + int256(delta.respect));
         relationship.envy = MerzavetsMath.clampStat(int256(uint256(relationship.envy)) + int256(delta.envy));
@@ -527,13 +703,17 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         if (intent == uint8(LifeIntent.SEEK_COMPANY)) {
             _adjustNeeds(tokenId, state, -200, 150, -200, -50, -700, 100, 100);
             uint256 peer = preferredPeer[tokenId];
-            if (peer != 0 && _states[peer].level != 0) _applySocialAction(tokenId, peer, uint8(SocialAction.GREET));
+            if (peer != 0 && _states[peer].level != 0) {
+                _applySocialAction(tokenId, peer, uint8(SocialAction.GREET));
+            }
             return;
         }
         if (intent == uint8(LifeIntent.MOCK_RIVAL)) {
             _adjustNeeds(tokenId, state, -150, 100, -150, 100, -200, 350, -200);
             uint256 peer = preferredPeer[tokenId];
-            if (peer != 0 && _states[peer].level != 0) _applySocialAction(tokenId, peer, uint8(SocialAction.MOCK));
+            if (peer != 0 && _states[peer].level != 0) {
+                _applySocialAction(tokenId, peer, uint8(SocialAction.MOCK));
+            }
             return;
         }
         if (intent == uint8(LifeIntent.GROOM)) {
@@ -568,13 +748,14 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint32[10] memory counters = _activityCounters[tokenId];
         uint32[4] memory extraCounters = _mutationCounters[tokenId];
         CreatureState storage state = _states[tokenId];
+        uint256 age = block.timestamp - uint256(bornAt[tokenId]);
         uint256 previousMutations = mutationMask[tokenId];
         uint256 nextMutations = MutationRules.evaluate(
             previousMutations,
             counters,
             extraCounters,
             inactivity,
-            block.timestamp - uint256(bornAt[tokenId]),
+            age,
             state.level
         );
 
@@ -590,15 +771,38 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint256 scars;
         if (counters[5] != 0) scars |= SCAR_FIRST_DEPLOYMENT;
         if (inactivity >= VERY_LONG_SLEEP) scars |= SCAR_LONG_SLEEP;
+        if (age >= OLD_ACCOUNT_AGE) scars |= SCAR_OLD_ACCOUNT;
+
+        uint256 rareCombo = MUTATION_GAS_GILLS | MUTATION_CONTRACT_TEETH | MUTATION_CALLDATA_EYE;
+        if ((mutationMask[tokenId] & rareCombo) == rareCombo) scars |= SCAR_RARE_COMBINATION;
         if (scars != 0) _addScars(tokenId, scars);
+    }
+
+    function _unlockMutation(uint256 tokenId, uint256 bit) private {
+        uint256 previous = mutationMask[tokenId];
+        if ((previous & bit) != 0) return;
+        uint256 next = previous | bit;
+        mutationMask[tokenId] = next;
+        _grantXp(tokenId, XP_MUTATION, 2);
+        emit MutationsUnlocked(tokenId, bit, next);
+        if (previous == 0) _addScars(tokenId, SCAR_FIRST_MUTATION);
     }
 
     function _addScars(uint256 tokenId, uint256 bits) private {
         uint256 previous = scarMask[tokenId];
         uint256 next = previous | bits;
         if (next == previous) return;
+
+        uint256 newBits = next & ~previous;
         scarMask[tokenId] = next;
-        emit Scarred(tokenId, next & ~previous, next);
+        uint256 remaining = newBits;
+        while (remaining != 0) {
+            uint256 bit = remaining & (~remaining + 1);
+            uint32 count = scarUnlockCount[tokenId][bit];
+            if (count != type(uint32).max) scarUnlockCount[tokenId][bit] = count + 1;
+            remaining &= remaining - 1;
+        }
+        emit Scarred(tokenId, newBits, next);
     }
 
     function _advanceStage(uint256 tokenId, CreatureState storage state) private {
@@ -621,10 +825,18 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         uint256 events,
         uint256 diversity
     ) private pure returns (bool) {
-        if (stage == uint8(Stage.PAKOSTNIK)) return age >= 1 days && xp >= 500 && events >= 1 && diversity >= 2;
-        if (stage == uint8(Stage.MERZAVETS)) return age >= 7 days && xp >= 5_000 && events >= 5 && diversity >= 3;
-        if (stage == uint8(Stage.MATERYI)) return age >= 30 days && xp >= 25_000 && events >= 20 && diversity >= 5;
-        if (stage == uint8(Stage.ARKHIMERZAVETS)) return age >= 90 days && xp >= 100_000 && events >= 50 && diversity >= 7;
+        if (stage == uint8(Stage.PAKOSTNIK)) {
+            return age >= 1 days && xp >= 500 && events >= 1 && diversity >= 2;
+        }
+        if (stage == uint8(Stage.MERZAVETS)) {
+            return age >= 7 days && xp >= 5_000 && events >= 5 && diversity >= 3;
+        }
+        if (stage == uint8(Stage.MATERYI)) {
+            return age >= 30 days && xp >= 25_000 && events >= 20 && diversity >= 5;
+        }
+        if (stage == uint8(Stage.ARKHIMERZAVETS)) {
+            return age >= 90 days && xp >= 100_000 && events >= 50 && diversity >= 7;
+        }
         return false;
     }
 
@@ -655,12 +867,20 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         }
     }
 
+    function _delta(int256 value) private pure returns (int16) {
+        if (value > 10_000) return 10_000;
+        if (value < -10_000) return -10_000;
+        return int16(value);
+    }
+
     function _axis(bytes32 seed, uint8 index) private pure returns (uint16) {
         return uint16(uint256(keccak256(abi.encode(seed, index))) % 10_001);
     }
 
     function _hasActivity(uint16[10] calldata counters) private pure returns (bool) {
-        for (uint256 i = 0; i < counters.length; ++i) if (counters[i] != 0) return true;
+        for (uint256 i = 0; i < counters.length; ++i) {
+            if (counters[i] != 0) return true;
+        }
         return false;
     }
 }
