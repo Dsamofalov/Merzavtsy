@@ -7,6 +7,20 @@ export const IDENTITY_ABI = [
     outputs: [{ name: "", type: "address" }],
   },
   {
+    type: "function",
+    name: "birth",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [{ name: "tokenId", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "tokenOf",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ name: "tokenId", type: "uint256" }],
+  },
+  {
     type: "event",
     name: "Born",
     anonymous: false,
@@ -42,6 +56,17 @@ const CREATURE_STATE_COMPONENTS = [
   { name: "socialNeed", type: "uint16" },
 ] as const;
 
+const RELATIONSHIP_COMPONENTS = [
+  { name: "affinity", type: "int16" },
+  { name: "trust", type: "int16" },
+  { name: "fear", type: "uint16" },
+  { name: "respect", type: "uint16" },
+  { name: "envy", type: "uint16" },
+  { name: "rivalry", type: "uint16" },
+  { name: "interactionCount", type: "uint32" },
+  { name: "lastInteractionAt", type: "uint40" },
+] as const;
+
 export const WORLD_ABI = [
   {
     type: "function",
@@ -59,6 +84,20 @@ export const WORLD_ABI = [
       name: "",
       type: "tuple",
       components: CREATURE_STATE_COMPONENTS,
+    }],
+  },
+  {
+    type: "function",
+    name: "relationshipOf",
+    stateMutability: "view",
+    inputs: [
+      { name: "actorTokenId", type: "uint256" },
+      { name: "targetTokenId", type: "uint256" },
+    ],
+    outputs: [{
+      name: "",
+      type: "tuple",
+      components: RELATIONSHIP_COMPONENTS,
     }],
   },
   {
