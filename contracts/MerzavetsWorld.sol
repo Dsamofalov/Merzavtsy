@@ -562,7 +562,9 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         int256 warmth = int256(uint256(target.sociability)) / 250;
         int256 resistance = int256(uint256(target.stability)) / 250;
         int256 threat = int256(uint256(target.aggression)) / 250;
-        int256 historyWeight = int256(relationship.interactionCount > 20 ? 20 : relationship.interactionCount);
+        uint256 cappedInteractions =
+            relationship.interactionCount > 20 ? 20 : uint256(relationship.interactionCount);
+        int256 historyWeight = int256(cappedInteractions);
 
         if (action == uint8(SocialAction.GREET) || action == uint8(SocialAction.HELP)) {
             delta.affinity = _delta(int256(delta.affinity) + warmth - threat / 2 + historyWeight + jitter);
