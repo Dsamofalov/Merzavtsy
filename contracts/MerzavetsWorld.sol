@@ -136,6 +136,7 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     event CreatureInitialized(uint256 indexed tokenId, address indexed owner, bytes32 indexed genomeSeed);
     event OracleConfigured(address indexed oracle);
     event ActivityApplied(uint256 indexed tokenId, bytes32 indexed activityDigest, uint64 xpDelta, uint16 level);
+    event MutationMetricsApplied(uint256 indexed tokenId, uint16[4] mutationCounters);
     event VerifiedPeerContact(
         uint256 indexed actorTokenId,
         uint256 indexed peerTokenId,
@@ -208,7 +209,6 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
 
         genomeSeedOf[tokenId] = genomeSeed;
         bornAt[tokenId] = uint40(birthTimestamp);
-
         emit CreatureInitialized(tokenId, owner, genomeSeed);
     }
 
@@ -218,14 +218,12 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         if (state.level == 0) revert CreatureNotInitialized();
 
         uint256 inactivity = block.timestamp - uint256(state.lastActivityAt);
-        bool meaningful = attestation.xpDelta != 0 || _hasActivity(attestation.categoryCounters)
-            || _hasMutationActivity(attestation.mutationCounters);
+        bool meaningful = attestation.xpDelta != 0 || _hasActivity(attestation.categoryCounters);
 
         _grantXp(attestation.tokenId, attestation.xpDelta, 0);
         _applyPersonalityDeltas(state, attestation.personalityDeltas);
         _applyNeedDeltas(state, attestation.needDeltas);
         uint256 activityPulse = _accumulateActivity(attestation.tokenId, attestation.categoryCounters);
-        _accumulateMutationCounters(attestation.tokenId, attestation.mutationCounters);
         _applyActivityPulse(attestation.tokenId, state, activityPulse, attestation.needDeltas[3]);
 
         if (meaningful) {
@@ -237,8 +235,21 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         _evaluateBiography(attestation.tokenId, inactivity);
         state.level = MerzavetsMath.levelForXp(state.xp);
         _advanceStage(attestation.tokenId, state);
-
         emit ActivityApplied(attestation.tokenId, attestation.activityDigest, attestation.xpDelta, state.level);
+    }
+
+    function applyVerifiedMutationMetrics(
+        uint256 tokenId,
+        uint16[4] calldata counters
+    ) external override {
+        if (msg.sender != oracle) revert OnlyOracle();
+        CreatureState storage state = _states[tokenId];
+        if (state.level == 0) revert CreatureNotInitialized();
+        _accumulateMutationCounters(tokenId, counters);
+        _evaluateBiography(tokenId, block.timestamp - uint256(state.lastActivityAt));
+        state.level = MerzavetsMath.levelForXp(state.xp);
+        _advanceStage(tokenId, state);
+        emit MutationMetricsApplied(tokenId, counters);
     }
 
     function applyVerifiedPeerContact(
@@ -306,7 +317,6 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         if (count != type(uint32).max) lifeActionCount[tokenId] = count + 1;
         lastLifeIntent[tokenId] = intent;
         _grantXp(tokenId, XP_LIFE_ACTION, 3);
-
         emit LifeAction(tokenId, intent, lifeActionCount[tokenId]);
     }
 
@@ -446,7 +456,6 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         Relationship storage relationship = _relationships[actorTokenId][targetTokenId];
         SocialRules.Deltas memory delta = SocialRules.forAction(action, actor.aggression, actor.sociability, actor.chaos);
         _applyRelationshipDelta(relationship, delta);
-
         emit SocialActionTaken(
             actorTokenId,
             targetTokenId,
@@ -651,11 +660,6 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
     }
 
     function _hasActivity(uint16[10] calldata counters) private pure returns (bool) {
-        for (uint256 i = 0; i < counters.length; ++i) if (counters[i] != 0) return true;
-        return false;
-    }
-
-    function _hasMutationActivity(uint16[4] calldata counters) private pure returns (bool) {
         for (uint256 i = 0; i < counters.length; ++i) if (counters[i] != 0) return true;
         return false;
     }
