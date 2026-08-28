@@ -34,6 +34,18 @@ export interface ActivityMerkleProof {
   siblings: Hex[];
 }
 
+export interface SelectiveActivityProofEntry {
+  index: number;
+  leaf: Hex;
+  siblings: Hex[];
+}
+
+export interface SelectiveActivityProof {
+  root: Hex;
+  totalEntries: number;
+  entries: SelectiveActivityProofEntry[];
+}
+
 export function parseAuditSignerAllowlist(env: NodeJS.ProcessEnv): Address[] {
   const raw = env.ORACLE_SIGNER_ADDRESSES?.trim() || env.ORACLE_SIGNER_ADDRESS?.trim();
   if (!raw) {
@@ -187,4 +199,41 @@ export function verifyActivityMerkleProof(leaf: Hex, siblings: readonly Hex[], r
   let node = leaf;
   for (const sibling of siblings) node = pairHash(node, sibling);
   return node.toLowerCase() === root.toLowerCase();
+}
+
+/**
+ * Build independent inclusion proofs for a caller-selected subset of the public feed.
+ * This deliberately provides selective disclosure at entry granularity without introducing
+ * a ZK circuit or changing the signed EIP-712 payload format.
+ */
+export function buildSelectiveActivityProof(
+  feed: readonly OpenActivityFeedEntry[],
+  indices: readonly number[],
+): SelectiveActivityProof {
+  if (feed.length === 0) throw new Error("cannot build a selective proof for an empty activity feed");
+  if (indices.length === 0) throw new Error("selective activity proof requires at least one index");
+  const unique = [...new Set(indices)];
+  if (unique.length !== indices.length) throw new Error("selective activity proof indices must be unique");
+  unique.sort((a, b) => a - b);
+  const root = activityMerkleRoot(feed);
+  const entries = unique.map((index) => {
+    const proof = buildActivityMerkleProof(feed, index);
+    if (proof.root.toLowerCase() !== root.toLowerCase()) throw new Error("inconsistent activity Merkle root");
+    return { index, leaf: feed[index]!.leaf, siblings: proof.siblings };
+  });
+  return { root, totalEntries: feed.length, entries };
+}
+
+export function verifySelectiveActivityProof(proof: SelectiveActivityProof): boolean {
+  if (!Number.isInteger(proof.totalEntries) || proof.totalEntries <= 0 || proof.entries.length === 0) return false;
+  const seen = new Set<number>();
+  let prior = -1;
+  for (const entry of proof.entries) {
+    if (!Number.isInteger(entry.index) || entry.index < 0 || entry.index >= proof.totalEntries) return false;
+    if (seen.has(entry.index) || entry.index <= prior) return false;
+    if (!verifyActivityMerkleProof(entry.leaf, entry.siblings, proof.root)) return false;
+    seen.add(entry.index);
+    prior = entry.index;
+  }
+  return true;
 }
