@@ -39,7 +39,9 @@ library MutationRules {
         if (counters[9] >= 10) mask |= CALLDATA_EYE;
         if (counters[5] >= 3) mask |= PIMPLED_BRAIN;
         if (inactivity >= VERY_LONG_SLEEP) mask |= WALLET_MOLD;
-        if (counters[4] >= 20) mask |= STICKY_FINGERS;
+        // Sticky Fingers represents habitual return to a narrow set. An already-established
+        // Road Rash biography (compulsive novelty) is an explicit forbidden dependency.
+        if (counters[4] >= 20 && (currentMask & ROAD_RASH) == 0) mask |= STICKY_FINGERS;
         if (counters[6] >= 20) mask |= CROWDED_WHISKERS;
         if (counters[3] >= 20) mask |= ROAD_RASH;
 
