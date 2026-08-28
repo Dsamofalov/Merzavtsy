@@ -840,6 +840,8 @@ contract MerzavetsWorld is Ownable, IMerzavetsWorld {
         if (counters[5] != 0) scars |= SCAR_FIRST_DEPLOYMENT;
         if (inactivity >= VERY_LONG_SLEEP) scars |= SCAR_LONG_SLEEP;
         if (age >= OLD_ACCOUNT_AGE) scars |= SCAR_OLD_ACCOUNT;
+        uint256 rareCombo = MUTATION_GAS_GILLS | MUTATION_CONTRACT_TEETH | MUTATION_CALLDATA_EYE;
+        if ((mutationMask[tokenId] & rareCombo) == rareCombo) scars |= SCAR_RARE_COMBINATION;
         if (scars != 0) _addScars(tokenId, scars);
     }
 
