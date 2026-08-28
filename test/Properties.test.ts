@@ -82,6 +82,10 @@ function assertCreatureBounds(state: {
   }
 }
 
+function assertSameAddress(actual: string, expected: string) {
+  assert.equal(actual.toLowerCase(), expected.toLowerCase());
+}
+
 describe("Merzavtsy contract invariants", () => {
   it("keeps every bounded creature stat in range while XP only increases across an activity sequence", async () => {
     const { oracleSigner, alice, chainId, world, oracle, domain } = await networkHelpers.loadFixture(fixture);
@@ -142,14 +146,14 @@ describe("Merzavtsy contract invariants", () => {
 
   it("preserves soulbound ownership through oracle activity, social actions and autonomous ticks", async () => {
     const { alice, bob, keeper, merzavets, world } = await networkHelpers.loadFixture(fixture);
-    assert.equal(await merzavets.read.ownerOf([1n]), alice.account.address);
+    assertSameAddress(await merzavets.read.ownerOf([1n]), alice.account.address);
 
     await world.write.socialize([1n, 2n, 2], { account: alice.account });
     await networkHelpers.time.increase(6 * 60 * 60 + 1);
     await world.write.lifeTick([1n], { account: keeper.account });
 
-    assert.equal(await merzavets.read.ownerOf([1n]), alice.account.address);
-    assert.equal(await merzavets.read.ownerOf([2n]), bob.account.address);
+    assertSameAddress(await merzavets.read.ownerOf([1n]), alice.account.address);
+    assertSameAddress(await merzavets.read.ownerOf([2n]), bob.account.address);
     await viem.assertions.revertWithCustomError(
       merzavets.write.transferFrom([alice.account.address, bob.account.address, 1n], { account: alice.account }),
       merzavets,
