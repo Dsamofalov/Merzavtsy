@@ -121,4 +121,19 @@ describe("release operations", () => {
     assert.match(security, /redact/i);
     assert.match(security, /no custody|non-custodial/i);
   });
+
+  it("pins the manual Sepolia proof workflow to real verification, deployment, smoke and artifact capture", async () => {
+    const workflow = await readFile(".github/workflows/sepolia-proof.yml", "utf8").catch(() => "");
+
+    assert.match(workflow, /workflow_dispatch:/, "Sepolia proof workflow must be manually gated");
+    assert.match(workflow, /CHAIN_ID:\s*["']?11155111["']?/, "Sepolia chain ID must be pinned");
+    assert.match(workflow, /SEPOLIA_RPC_URL/, "workflow must receive Sepolia RPC through Actions secrets");
+    assert.match(workflow, /SEPOLIA_DEPLOYER_PRIVATE_KEY/, "workflow must receive deployer key through Actions secrets");
+    assert.match(workflow, /npm run verify/, "repository verification must pass before touching Sepolia");
+    assert.match(workflow, /npm run deploy/, "workflow must perform a real deployment");
+    assert.match(workflow, /npm run smoke:sepolia/, "workflow must run the fail-closed Sepolia smoke command");
+    assert.match(workflow, /actions\/upload-artifact@v4/, "workflow must preserve proof artifacts");
+    assert.match(workflow, /proofs\/sepolia-smoke\.json/, "smoke proof must be uploaded");
+    assert.match(workflow, /deployments\/11155111\.json/, "deployment metadata must be uploaded alongside the proof");
+  });
 });
