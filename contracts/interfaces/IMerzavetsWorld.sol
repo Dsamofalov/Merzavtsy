@@ -14,6 +14,7 @@ interface IMerzavetsWorld {
         int16[8] personalityDeltas;
         int16[5] needDeltas;
         uint16[10] categoryCounters;
+        uint16[4] mutationCounters;
         uint256 nonce;
         uint256 deadline;
     }
