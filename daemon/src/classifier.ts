@@ -50,18 +50,26 @@ export function classifyTransaction(
 
   if (!outgoing && !incoming) return result;
 
-  if (outgoing) push(result, tx, ActivityCategory.TX_SENT);
-  if (incoming) push(result, tx, ActivityCategory.TX_RECEIVED);
+  const minimumMeaningfulWei = context.minimumMeaningfulWei ?? 0n;
+  if (minimumMeaningfulWei < 0n) throw new Error("minimumMeaningfulWei must be non-negative");
+  const valueMeaningful = tx.value >= minimumMeaningfulWei;
+  const contractOrDeployment = outgoing && (tx.to === null || context.destinationHasCode);
+  const transferProgression = valueMeaningful || contractOrDeployment;
+
+  if (outgoing && transferProgression) push(result, tx, ActivityCategory.TX_SENT);
+  if (incoming && valueMeaningful) push(result, tx, ActivityCategory.TX_RECEIVED);
 
   const counterparty = outgoing ? tx.to : tx.from;
   if (counterparty !== null) {
     const counterpartyKey = lower(counterparty);
-    if (!context.seenCounterparties.has(counterpartyKey)) {
+    if (transferProgression && !context.seenCounterparties.has(counterpartyKey)) {
       push(result, tx, ActivityCategory.UNIQUE_COUNTERPARTY);
     }
 
     const peerTokenId = context.registeredPeers.get(counterpartyKey);
     if (peerTokenId !== undefined) {
+      // Registered-peer contact remains observable for biography even when the
+      // transferred amount is below the plain-ETH progression threshold.
       push(result, tx, ActivityCategory.REGISTERED_PEER_CONTACT, { peerTokenId });
     }
   }
