@@ -64,7 +64,9 @@ export interface MetadataApiResponse {
 }
 
 export function buildMetadataApiResponse(metadata: CreatureMetadata): MetadataApiResponse {
-  const body = JSON.stringify(metadata);
+  const body = JSON.stringify(metadata, (_key, value: unknown) =>
+    typeof value === "bigint" ? value.toString() : value,
+  );
   const digest = keccak256(toHex(body));
   return {
     status: 200,
