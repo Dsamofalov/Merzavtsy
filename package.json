@@ -17,6 +17,8 @@
     "show:relationship": "node --import tsx scripts/show-relationship.ts",
     "sign:attestation": "node --import tsx scripts/sign-attestation.ts",
     "submit:attestation": "node --import tsx scripts/submit-attestation.ts",
+    "reorg:status": "node --import tsx scripts/reorg-control.ts status",
+    "reorg:clear": "node --import tsx scripts/reorg-control.ts clear",
     "test": "hardhat test",
     "test:contracts": "hardhat test nodejs",
     "test:daemon": "node --import tsx --test daemon/test/*.test.ts",
