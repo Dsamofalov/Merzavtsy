@@ -60,7 +60,8 @@ export function normalizeObservedBlock(
 ): ObservedBlock {
   if (chainId <= 0n) throw new Error("chainId must be positive");
   if (block.number === null) throw new Error("finalized block number is required");
-  if (block.number < 0n) throw new Error("block number must be non-negative");
+  const blockNumber = block.number;
+  if (blockNumber < 0n) throw new Error("block number must be non-negative");
   if (block.hash === null) throw new Error("finalized block hash is required");
   if (block.timestamp < 0n) throw new Error("block timestamp must be non-negative");
 
@@ -80,7 +81,7 @@ export function normalizeObservedBlock(
     const receipt = receiptByHash.get(txHash.toLowerCase());
     if (receipt === undefined) throw new Error(`missing receipt for ${txHash}`);
     if (
-      receipt.blockNumber !== block.number
+      receipt.blockNumber !== blockNumber
       || receipt.blockHash === null
       || receipt.blockHash.toLowerCase() !== blockHash.toLowerCase()
     ) {
@@ -91,7 +92,7 @@ export function normalizeObservedBlock(
     receiptByHash.delete(txHash.toLowerCase());
     return {
       chainId,
-      blockNumber: block.number,
+      blockNumber,
       blockHash,
       txHash,
       from: address(tx.from, "transaction from"),
@@ -108,7 +109,7 @@ export function normalizeObservedBlock(
   }
 
   return {
-    number: block.number,
+    number: blockNumber,
     hash: blockHash,
     parentHash,
     timestamp: block.timestamp,
