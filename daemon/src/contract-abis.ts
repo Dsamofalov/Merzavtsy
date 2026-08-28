@@ -54,6 +54,9 @@ const CREATURE_STATE_COMPONENTS = [
   { name: "boredom", type: "uint16" },
   { name: "stress", type: "uint16" },
   { name: "socialNeed", type: "uint16" },
+] as const;
+
+const EXTENDED_NEEDS_COMPONENTS = [
   { name: "arousal", type: "uint16" },
   { name: "stabilityState", type: "uint16" },
 ] as const;
@@ -83,6 +86,13 @@ export const WORLD_ABI = [
     stateMutability: "view",
     inputs: [{ name: "tokenId", type: "uint256" }],
     outputs: [{ name: "", type: "tuple", components: CREATURE_STATE_COMPONENTS }],
+  },
+  {
+    type: "function",
+    name: "extendedNeedsOf",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ name: "", type: "tuple", components: EXTENDED_NEEDS_COMPONENTS }],
   },
   {
     type: "function",
