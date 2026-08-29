@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.git
+.github
+node_modules
+daemon/data
+artifacts
+cache
+coverage
+*.log
+npm-debug.log*
+Dockerfile*
+compose*.yaml
+compose*.yml
+docs
+test

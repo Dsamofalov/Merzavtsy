@@ -1,0 +1,24 @@
+services:
+  daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: merzavtsy-daemon:local
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /app/daemon/data/merzavtsy.sqlite
+    volumes:
+      - merzavtsy-data:/app/daemon/data
+      - ./deployments:/app/deployments:ro
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+
+volumes:
+  merzavtsy-data:
